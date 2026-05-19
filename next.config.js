@@ -3,6 +3,10 @@
 const nextConfig = {
   // 根据环境自动选择输出模式：Vercel自动处理，Docker使用standalone
   // 本地开发时不使用 standalone 避免 Windows 符号链接权限问题
+  output: 'export', // 关键：告诉 Next.js 编译为纯静态 HTML/JS/CSS
+  images: {
+    unoptimized: true, // 关键：禁用 Next.js 的图片优化，让海报直接走采集站链接，瞬间省下流量
+  },
   ...(process.env.VERCEL || process.env.DOCKER_BUILD
     ? { output: 'standalone' }
     : {}),
