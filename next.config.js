@@ -35,6 +35,7 @@ const nextConfig = {
   images: {
     // NOTE: 移除 unoptimized: true 以启用 Next.js 图片优化
     // 如果部署到不支持图片优化的平台，可重新启用
+    unoptimized: true,
     remotePatterns: [
       {
         protocol: 'https',
