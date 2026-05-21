@@ -7,7 +7,7 @@ import { verifyApiAuth } from '@/lib/auth';
 import { getConfig } from '@/lib/config';
 import { deleteCachedLiveChannels, refreshLiveChannels } from '@/lib/live';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
 export async function POST(request: NextRequest) {
   // 🔐 使用统一认证函数，正确处理 localstorage 和数据库模式的差异

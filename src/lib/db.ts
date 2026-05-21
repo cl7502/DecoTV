@@ -14,7 +14,12 @@ import {
 import { UpstashRedisStorage } from './upstash.db';
 
 // storage type 常量: 'localstorage' | 'redis' | 'upstash'，默认 'localstorage'
+// 优先级策略：如果存在 UPSTASH_REDIS_REST_URL，则在 Edge 环境下强制使用 upstash
+const IS_EDGE = process.env.NEXT_RUNTIME === 'edge';
+const HAS_UPSTASH = !!(process.env.UPSTASH_REDIS_REST_URL || process.env.NEXT_PUBLIC_UPSTASH_REDIS_REST_URL);
+
 const STORAGE_TYPE =
+  (HAS_UPSTASH && IS_EDGE) ? 'upstash' :
   (process.env.NEXT_PUBLIC_STORAGE_TYPE as
     | 'localstorage'
     | 'redis'

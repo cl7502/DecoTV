@@ -6,7 +6,7 @@ import {
   toPrivateLibraryErrorMessage,
 } from '@/lib/private-library';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
 interface ProgressBody {
   connectorId?: string;

@@ -15,7 +15,7 @@ import {
   validateProxyTargetUrl,
 } from '@/lib/proxy-security';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
 const DEFAULT_UA =
   'Mozilla/5.0 (Linux; Android 10; AndroidTV) AppleWebKit/537.36 ' +

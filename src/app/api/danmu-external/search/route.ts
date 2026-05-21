@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server';
 
 import { getConfig } from '@/lib/config';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
 const DANDANPLAY_API_BASE = 'https://api.dandanplay.net';
 const SEARCH_TIMEOUT_MS = 20_000;

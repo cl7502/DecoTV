@@ -6,7 +6,7 @@ import { AdminConfigResult } from '@/lib/admin.types';
 import { verifyApiAuth } from '@/lib/auth';
 import { getConfig, getLocalModeConfig } from '@/lib/config';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
 // 扩展返回类型，支持本地模式标识
 interface AdminConfigResultWithMode extends AdminConfigResult {

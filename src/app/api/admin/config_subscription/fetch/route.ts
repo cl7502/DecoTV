@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { verifyApiAuth } from '@/lib/auth';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
 export async function POST(request: NextRequest) {
   try {
