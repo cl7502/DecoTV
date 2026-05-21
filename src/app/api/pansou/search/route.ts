@@ -211,6 +211,7 @@ async function forwardToPanSou(args: {
   method: 'GET' | 'POST';
   runtimeConfig: PanSouRuntimeConfig;
   body?: string;
+  cacheControl?: string;
 }) {
   const timeoutMsRaw = Number.parseInt(
     process.env.PANSOU_PROXY_TIMEOUT_MS || '',
@@ -265,11 +266,13 @@ async function forwardToPanSou(args: {
     const contentType =
       response.headers.get('content-type') || 'application/json; charset=utf-8';
 
+    const cacheControl = args.cacheControl || 'no-store';
+
     return new NextResponse(rawBody, {
       status: response.status,
       headers: withCorsHeaders({
         'Content-Type': contentType,
-        'Cache-Control': 'no-store',
+        'Cache-Control': cacheControl,
       }),
     });
   } catch (error) {
@@ -331,11 +334,13 @@ export async function GET(request: NextRequest) {
     upstreamUrl.searchParams.set(key, value);
   });
 
+  // 为 GET 搜索请求增加 10 分钟缓存
   return forwardToPanSou({
     request,
     upstreamUrl: upstreamUrl.toString(),
     method: 'GET',
     runtimeConfig,
+    cacheControl: 'public, max-age=600, s-maxage=600, stale-while-revalidate=300',
   });
 }
 

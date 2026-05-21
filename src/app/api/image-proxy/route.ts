@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
 // OrionTV 兼容接口
 export async function GET(request: Request) {
@@ -9,6 +9,29 @@ export async function GET(request: Request) {
 
   if (!imageUrl) {
     return NextResponse.json({ error: 'Missing image URL' }, { status: 400 });
+  }
+
+  // 安全检查：防止 SSRF。仅允许代理受信任域名的图片（如豆瓣图片）。
+  try {
+    const url = new URL(imageUrl);
+    const allowedHosts = [
+      'doubanio.com',
+      'douban.com',
+      'cmliussss.net',
+      'cmliussss.com',
+    ];
+    const isAllowed = allowedHosts.some(
+      (host) => url.hostname === host || url.hostname.endsWith('.' + host),
+    );
+
+    if (!isAllowed) {
+      return NextResponse.json(
+        { error: 'Forbidden: Untrusted image domain' },
+        { status: 403 },
+      );
+    }
+  } catch {
+    return NextResponse.json({ error: 'Invalid image URL' }, { status: 400 });
   }
 
   try {
@@ -42,10 +65,14 @@ export async function GET(request: Request) {
       headers.set('Content-Type', contentType);
     }
 
-    // 设置缓存头（可选）
-    headers.set('Cache-Control', 'public, max-age=15720000, s-maxage=15720000'); // 缓存半年
-    headers.set('CDN-Cache-Control', 'public, s-maxage=15720000');
-    headers.set('Vercel-CDN-Cache-Control', 'public, s-maxage=15720000');
+    // 设置缓存头（长期缓存，且允许边缘节点在后台更新）
+    const CACHE_TIME = 31536000; // 1年
+    headers.set(
+      'Cache-Control',
+      `public, max-age=${CACHE_TIME}, s-maxage=${CACHE_TIME}, stale-while-revalidate=604800`,
+    );
+    headers.set('CDN-Cache-Control', `public, s-maxage=${CACHE_TIME}`);
+    headers.set('Vercel-CDN-Cache-Control', `public, s-maxage=${CACHE_TIME}`);
     headers.set('Netlify-Vary', 'query');
 
     // 直接返回图片流

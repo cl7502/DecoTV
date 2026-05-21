@@ -165,14 +165,15 @@ export async function GET(request: NextRequest) {
 
     const result = await getDetailFromApi(apiSite, id);
     const cacheTime = await getCacheTime();
+    const sMaxAge = cacheTime * 2;
 
     const finalResult = await rewriteEpisodesForAdFilter(result, request);
 
     return NextResponse.json(finalResult, {
       headers: {
-        'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-        'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-        'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
+        'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${sMaxAge}, stale-while-revalidate=${cacheTime}`,
+        'CDN-Cache-Control': `public, s-maxage=${sMaxAge}`,
+        'Vercel-CDN-Cache-Control': `public, s-maxage=${sMaxAge}`,
         'Netlify-Vary': 'query',
       },
     });

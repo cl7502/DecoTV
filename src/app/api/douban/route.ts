@@ -79,11 +79,13 @@ export async function GET(request: Request) {
     };
 
     const cacheTime = await getCacheTime();
+    const sMaxAge = cacheTime * 2;
+
     return NextResponse.json(response, {
       headers: {
-        'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-        'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-        'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
+        'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${sMaxAge}, stale-while-revalidate=${cacheTime}`,
+        'CDN-Cache-Control': `public, s-maxage=${sMaxAge}`,
+        'Vercel-CDN-Cache-Control': `public, s-maxage=${sMaxAge}`,
         'Netlify-Vary': 'query',
       },
     });
@@ -155,11 +157,12 @@ function handleTop250(pageStart: number) {
       };
 
       const cacheTime = await getCacheTime();
+      const sMaxAge = cacheTime * 2;
       return NextResponse.json(apiResponse, {
         headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-          'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
+          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${sMaxAge}, stale-while-revalidate=${cacheTime}`,
+          'CDN-Cache-Control': `public, s-maxage=${sMaxAge}`,
+          'Vercel-CDN-Cache-Control': `public, s-maxage=${sMaxAge}`,
           'Netlify-Vary': 'query',
         },
       });

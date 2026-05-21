@@ -1,7 +1,7 @@
 export const POSTER_FALLBACK_SRC = '/poster-fallback.svg';
 
 const DEFAULT_WSRV_WIDTH = 256;
-const DEFAULT_DOUBAN_IMAGE_PROXY_TYPE = 'cmliussss-cdn-tencent';
+const DEFAULT_DOUBAN_IMAGE_PROXY_TYPE = 'wsrv';
 const TIER1_DIRECT_HOSTS = new Set(['lain.bgm.tv']);
 const WSRV_HOSTS = new Set(['wsrv.nl', 'images.weserv.nl']);
 const CMLIUSSSS_TENCENT_HOST = 'img.doubanio.cmliussss.net';
@@ -12,6 +12,7 @@ export type DoubanImageProxyType =
   | 'direct'
   | 'server'
   | 'img3'
+  | 'wsrv'
   | 'cmliussss-cdn-tencent'
   | 'cmliussss-cdn-ali'
   | 'custom';
@@ -71,8 +72,15 @@ function isDoubanImageHost(hostname: string): boolean {
 }
 
 function toWsrvUrl(absoluteUrl: string, wsrvWidth: number): string {
-  const sanitizedTarget = absoluteUrl.replace(/^https?:\/\//i, '');
-  return `https://wsrv.nl/?url=${encodeURIComponent(sanitizedTarget)}&w=${wsrvWidth}&default=blank`;
+  try {
+    const urlObj = new URL(absoluteUrl);
+    const sanitizedTarget = urlObj.href.replace(/^https?:\/\//i, '');
+    return `https://wsrv.nl/?url=${encodeURIComponent(sanitizedTarget)}&w=${wsrvWidth}&default=blank`;
+  } catch {
+    // 降级处理
+    const sanitizedTarget = absoluteUrl.replace(/^https?:\/\//i, '');
+    return `https://wsrv.nl/?url=${encodeURIComponent(sanitizedTarget)}&w=${wsrvWidth}&default=blank`;
+  }
 }
 
 function getDefaultDoubanImageProxy(): {
@@ -91,6 +99,7 @@ function applyDoubanImageProxy(
   parsedUrl: URL,
   proxyType: string,
   proxyUrl: string,
+  wsrvWidth: number = DEFAULT_WSRV_WIDTH,
 ): string {
   parsedUrl.protocol = 'https:';
 
@@ -102,6 +111,9 @@ function applyDoubanImageProxy(
       parsedUrl.hostname = DOUBAN_IMG3_HOST;
       return parsedUrl.toString();
 
+    case 'wsrv':
+      return toWsrvUrl(parsedUrl.toString(), wsrvWidth);
+
     case 'cmliussss-cdn-tencent':
       parsedUrl.hostname = CMLIUSSSS_TENCENT_HOST;
       return parsedUrl.toString();
@@ -111,6 +123,7 @@ function applyDoubanImageProxy(
       return parsedUrl.toString();
 
     case 'server':
+      // 这里的 /api/image-proxy 会消耗 Vercel 流量，建议优先使用 wsrv
       return `/api/image-proxy?url=${encodeURIComponent(parsedUrl.toString())}`;
 
     case 'custom': {
@@ -129,8 +142,7 @@ function applyDoubanImageProxy(
     }
 
     default:
-      parsedUrl.hostname = CMLIUSSSS_TENCENT_HOST;
-      return parsedUrl.toString();
+      return toWsrvUrl(parsedUrl.toString(), wsrvWidth);
   }
 }
 
@@ -157,6 +169,7 @@ export function resolveImageUrl(
   }
 
   const hostname = parsedUrl.hostname.toLowerCase();
+  const wsrvWidth = normalizeWsrvWidth(options.wsrvWidth);
 
   if (WSRV_HOSTS.has(hostname)) {
     return parsedUrl.toString();
@@ -175,7 +188,7 @@ export function resolveImageUrl(
       options.doubanImageProxy?.proxyType?.trim() || defaults.proxyType;
     const proxyUrl =
       options.doubanImageProxy?.proxyUrl ?? defaults.proxyUrl ?? '';
-    return applyDoubanImageProxy(parsedUrl, proxyType, proxyUrl);
+    return applyDoubanImageProxy(parsedUrl, proxyType, proxyUrl, wsrvWidth);
   }
 
   if (isDoubanHost(hostname)) {
