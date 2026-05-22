@@ -5,6 +5,7 @@ import path from 'path';
 
 import { BUILD_TIMESTAMP, CURRENT_VERSION } from '@/lib/version';
 
+export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 // 远程版本源配置

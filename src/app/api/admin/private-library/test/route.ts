@@ -8,7 +8,7 @@ import {
 } from '@/lib/private-library';
 import { normalizePrivateLibraryConfig } from '@/lib/private-library-config';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 async function ensureAdmin(request: NextRequest) {
   const authResult = verifyApiAuth(request);
