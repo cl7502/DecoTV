@@ -11,10 +11,12 @@ import {
 
 // storage type 常量: 'localstorage' | 'redis' | 'upstash' | 'kvrocks'
 // 优先级策略：如果存在 UPSTASH_REDIS_REST_URL，即便在 Node 环境也优先使用 upstash
-const IS_EDGE = process.env.NEXT_RUNTIME === 'edge';
+const IS_EDGE = process.env.NEXT_RUNTIME === 'edge' || process.env.CLOUDFLARE === 'true';
 const HAS_UPSTASH = !!(
   process.env.UPSTASH_REDIS_REST_URL ||
-  process.env.NEXT_PUBLIC_UPSTASH_REDIS_REST_URL
+  process.env.NEXT_PUBLIC_UPSTASH_REDIS_REST_URL ||
+  process.env.UPSTASH_URL ||
+  process.env.UPSTASH_REDIS_URL
 );
 
 const STORAGE_TYPE =
