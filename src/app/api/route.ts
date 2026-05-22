@@ -6,7 +6,7 @@ import { getAuthInfoFromCookie } from '@/lib/auth';
 import { getConfig } from '@/lib/config';
 import { CURRENT_VERSION } from '@/lib/version';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 // 根路径 API - 为 OrionTV 提供服务器信息和健康检查
 // 支持成人内容模式检测

@@ -12,7 +12,7 @@ import {
   tmdbSearch,
 } from '@/lib/tmdb';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 type SearchType = 'movie' | 'tv' | 'multi';
 type DetailType = 'movie' | 'tv';

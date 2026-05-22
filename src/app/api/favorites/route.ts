@@ -7,7 +7,7 @@ import { getConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { Favorite } from '@/lib/types';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 // 辅助函数：验证用户并获取用户名
 async function validateAndGetUsername(

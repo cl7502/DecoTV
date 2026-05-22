@@ -7,7 +7,7 @@ import { getConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { PlayRecord } from '@/lib/types';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 function isLegacyPrivateLibraryPlayRecordKey(key: string): boolean {
   if (key.startsWith('private:progress:')) {

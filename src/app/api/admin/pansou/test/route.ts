@@ -16,7 +16,7 @@ import {
   resolvePanSouSearchUrl,
 } from '@/lib/pansou';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 interface PanSouNodePayload {
   id?: string;

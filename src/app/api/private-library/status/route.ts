@@ -7,7 +7,7 @@ import {
   getPrivateLibraryConnectorTypeLabel,
 } from '@/lib/private-library';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 export async function GET(request: NextRequest) {
   const authResult = verifyApiAuth(request);

@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyApiAuth } from '@/lib/auth';
 import { API_CONFIG, ApiSite, getConfig } from '@/lib/config';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 type SourceValidationStatus = 'valid' | 'no_results' | 'invalid';
 

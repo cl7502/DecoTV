@@ -5,7 +5,7 @@ import { NextResponse } from 'next/server';
 import { getConfig } from '@/lib/config';
 import { getBaseUrl, resolveUrl } from '@/lib/live';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 const M3U8_CONTENT_TYPE = 'application/vnd.apple.mpegurl';
 

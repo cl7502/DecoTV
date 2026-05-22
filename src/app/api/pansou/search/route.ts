@@ -16,7 +16,7 @@ import {
   resolvePanSouSearchUrl,
 } from '@/lib/pansou';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 export const fetchCache = 'force-no-store';
 
 const DEFAULT_TIMEOUT_MS = 15000;
