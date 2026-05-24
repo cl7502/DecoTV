@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server';
 
 import { getConfig } from '@/lib/config';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
 function withCorsHeaders(headers: Headers) {
   headers.set('Access-Control-Allow-Origin', '*');

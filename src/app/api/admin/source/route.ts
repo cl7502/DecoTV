@@ -6,7 +6,7 @@ import { persistAdminConfigMutation } from '@/lib/admin-config-mutation';
 import { getAuthSecret, verifyApiAuth } from '@/lib/auth';
 import { getConfig } from '@/lib/config';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
 // 支持的操作类型
 type Action =

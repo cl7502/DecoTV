@@ -7,7 +7,7 @@ import { getConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import type { SkipPreset } from '@/lib/types';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
 function normalizePresetName(name: unknown): string {
   return String(name || '')

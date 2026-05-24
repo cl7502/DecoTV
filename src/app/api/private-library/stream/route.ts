@@ -6,7 +6,7 @@ import {
   toPrivateLibraryErrorMessage,
 } from '@/lib/private-library';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
 function mapStreamError(status: number): string {
   if (status === 401 || status === 403) {

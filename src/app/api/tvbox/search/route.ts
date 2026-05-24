@@ -7,7 +7,7 @@ import { searchFromApi } from '@/lib/downstream';
 import { rankSearchResults } from '@/lib/search-ranking';
 import { yellowWords } from '@/lib/yellow';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
 const normalizedYellowWords = yellowWords.map((word) => word.toLowerCase());
 

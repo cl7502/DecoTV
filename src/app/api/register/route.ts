@@ -5,7 +5,7 @@ import { persistAdminConfigMutation } from '@/lib/admin-config-mutation';
 import { getConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
 // 验证码存储（简单内存存储，生产环境建议用 Redis）
 const captchaStore = new Map<
