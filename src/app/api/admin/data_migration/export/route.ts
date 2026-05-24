@@ -1,17 +1,52 @@
 /* eslint-disable @typescript-eslint/no-explicit-any,no-console */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { promisify } from 'util';
-import { gzip } from 'zlib';
 
 import { verifyApiAuth } from '@/lib/auth';
 import { SimpleCrypto } from '@/lib/crypto';
 import { db } from '@/lib/db';
 import { CURRENT_VERSION } from '@/lib/version';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
-const gzipAsync = promisify(gzip);
+/**
+ * 使用 Web 标准 CompressionStream 进行 Gzip 压缩 (兼容 Edge)
+ */
+async function compressGzip(text: string): Promise<Uint8Array> {
+  const stream = new Blob([text]).stream();
+  const compressionStream = new CompressionStream('gzip');
+  const compressedStream = stream.pipeThrough(compressionStream);
+  const reader = compressedStream.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalLength = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    totalLength += value.length;
+  }
+
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+}
+
+/**
+ * 将 Uint8Array 转换为 Base64 字符串 (兼容 Edge)
+ */
+function uint8ArrayToBase64(uint8: Uint8Array): string {
+  let binary = '';
+  const len = uint8.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(uint8[i]);
+  }
+  return btoa(binary);
+}
 
 interface ExportUserData {
   playRecords: Record<string, unknown>;
@@ -127,9 +162,9 @@ export async function POST(req: NextRequest) {
     }
 
     const jsonData = JSON.stringify(exportData);
-    const compressedData = await gzipAsync(jsonData);
+    const compressedData = await compressGzip(jsonData);
     const encryptedData = SimpleCrypto.encrypt(
-      compressedData.toString('base64'),
+      uint8ArrayToBase64(compressedData),
       password,
     );
 
@@ -142,7 +177,6 @@ export async function POST(req: NextRequest) {
       headers: {
         'Content-Type': 'application/octet-stream',
         'Content-Disposition': `attachment; filename="${filename}"`,
-        'Content-Length': encryptedData.length.toString(),
       },
     });
   } catch (error) {

@@ -1,8 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any,no-console */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { promisify } from 'util';
-import { gunzip } from 'zlib';
 
 import {
   persistAdminConfigMutation,
@@ -13,9 +11,47 @@ import { configSelfCheck } from '@/lib/config';
 import { SimpleCrypto } from '@/lib/crypto';
 import { db } from '@/lib/db';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 
-const gunzipAsync = promisify(gunzip);
+/**
+ * 将 Base64 字符串转换为 Uint8Array (兼容 Edge)
+ */
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+/**
+ * 使用 Web 标准 DecompressionStream 进行 Gzip 解压 (兼容 Edge)
+ */
+async function decompressGzip(data: Uint8Array): Promise<string> {
+  const stream = new Blob([data]).stream();
+  const decompressionStream = new DecompressionStream('gzip');
+  const decompressedStream = stream.pipeThrough(decompressionStream);
+  const reader = decompressedStream.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalLength = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    totalLength += value.length;
+  }
+
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return new TextDecoder().decode(result);
+}
 
 interface ImportedUserData {
   username: string;
@@ -385,9 +421,8 @@ export async function POST(req: NextRequest) {
       throw new HttpError(400, '解密失败，请检查密码是否正确');
     }
 
-    const compressedBuffer = Buffer.from(decryptedData, 'base64');
-    const decompressedBuffer = await gunzipAsync(compressedBuffer);
-    const decompressedData = decompressedBuffer.toString();
+    const compressedBytes = base64ToUint8Array(decryptedData);
+    const decompressedData = await decompressGzip(compressedBytes);
 
     let parsedData: unknown;
     try {

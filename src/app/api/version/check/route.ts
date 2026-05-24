@@ -1,11 +1,9 @@
 /* eslint-disable no-console */
-import { promises as fs } from 'fs';
 import { NextResponse } from 'next/server';
-import path from 'path';
 
 import { BUILD_TIMESTAMP, CURRENT_VERSION } from '@/lib/version';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
 // 远程版本源配置
@@ -50,34 +48,30 @@ async function fetchWithTimeout(
 }
 
 /**
- * 获取本地版本时间戳
+ * 获取本地版本时间戳 (兼容 Edge: 不使用 fs)
  */
-async function getLocalTimestamp(): Promise<string> {
-  // 方法1: 从文件系统读取
-  const possiblePaths = [
-    path.join(process.cwd(), 'public', 'VERSION.txt'),
-    path.join(process.cwd(), 'VERSION.txt'),
-    path.join(process.cwd(), '.next', 'static', 'VERSION.txt'),
-  ];
-
-  for (const filePath of possiblePaths) {
-    try {
-      const content = await fs.readFile(filePath, 'utf-8');
-      const timestamp = content.trim();
-      if (/^\d{14}$/.test(timestamp)) {
-        return timestamp;
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  // 方法2: 使用构建时注入的环境变量（如果有）
+async function getLocalTimestamp(request: Request): Promise<string> {
+  // 方法1: 使用构建时注入的环境变量
   if (
     process.env.BUILD_TIMESTAMP &&
     /^\d{14}$/.test(process.env.BUILD_TIMESTAMP)
   ) {
     return process.env.BUILD_TIMESTAMP;
+  }
+
+  // 方法2: 在 Edge 环境下，通过请求自身的静态资源 URL 来读取 VERSION.txt
+  try {
+    const url = new URL('/VERSION.txt', request.url);
+    const res = await fetch(url.toString(), { cache: 'no-store' });
+    if (res.ok) {
+      const content = await res.text();
+      const timestamp = content.trim();
+      if (/^\d{14}$/.test(timestamp)) {
+        return timestamp;
+      }
+    }
+  } catch {
+    // ignore
   }
 
   // 方法3: 使用硬编码的默认值（从 version.ts 导入）
@@ -108,13 +102,11 @@ async function getRemoteTimestamp(): Promise<string | null> {
 /**
  * 版本检查 API
  * GET /api/version/check - 完整的版本检测，包含本地和远程版本比较
- *
- * 此 API 在服务端执行版本检测，解决客户端 CORS 和网络问题
  */
-export async function GET() {
+export async function GET(request: Request) {
   try {
     // 获取本地版本
-    const localTimestamp = await getLocalTimestamp();
+    const localTimestamp = await getLocalTimestamp(request);
 
     // 获取远程版本
     const remoteTimestamp = await getRemoteTimestamp();
