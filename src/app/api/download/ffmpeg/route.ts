@@ -12,7 +12,7 @@ import {
   startFfmpegDownload,
 } from '@/lib/ffmpeg-download';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 export const fetchCache = 'force-no-store';
 
 type StartActionPayload = {
@@ -125,6 +125,16 @@ function unauthorized() {
 }
 
 export async function GET(request: NextRequest) {
+  if (process.env.NEXT_RUNTIME === 'edge') {
+    return NextResponse.json(
+      {
+        error:
+          'FFmpeg 管理功能仅在 Node.js 环境下可用，Cloudflare Pages (Edge) 暂不支持。',
+      },
+      { status: 501 },
+    );
+  }
+
   const authResult = verifyApiAuth(request);
   if (!authResult.isValid) {
     return unauthorized();
@@ -144,10 +154,17 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const authResult = verifyApiAuth(request);
-  if (!authResult.isValid) {
-    return unauthorized();
+  if (process.env.NEXT_RUNTIME === 'edge') {
+    return NextResponse.json(
+      {
+        error:
+          'FFmpeg 下载功能仅在 Node.js 环境下可用，Cloudflare Pages (Edge) 暂不支持。',
+      },
+      { status: 501 },
+    );
   }
+
+  const authResult = verifyApiAuth(request);
 
   let payload: RequestPayload;
   try {

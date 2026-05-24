@@ -415,6 +415,19 @@ async function searchFromCustomServer(
 }
 
 export async function GET(request: Request) {
+  // Edge runtime guard for crypto dependency
+  if (process.env.NEXT_RUNTIME === 'edge') {
+    return NextResponse.json(
+      {
+        code: 501,
+        message:
+          '弹幕搜索功能由于依赖 Node.js crypto 模块，在 Cloudflare Pages (Edge) 环境下暂不可用。',
+        animes: [],
+      },
+      { status: 501 },
+    );
+  }
+
   const { searchParams } = new URL(request.url);
   const keyword = (searchParams.get('keyword') || '').trim();
 

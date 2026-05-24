@@ -3,6 +3,8 @@
  * 提供友好的 HTML 界面展示诊断结果
  */
 
+export const runtime = 'edge';
+
 export async function GET() {
   const html = `
 <!DOCTYPE html>

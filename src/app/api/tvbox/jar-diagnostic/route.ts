@@ -235,6 +235,17 @@ function detectEnvironment(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
+  // Edge runtime guard for crypto/Buffer dependency
+  if (process.env.NEXT_RUNTIME === 'edge') {
+    return NextResponse.json(
+      {
+        error:
+          'JAR 诊断功能由于依赖 Node.js 原生模块 (crypto/Buffer)，在 Cloudflare Pages (Edge) 环境下暂不可用。',
+      },
+      { status: 501 },
+    );
+  }
+
   const env = detectEnvironment(request);
 
   // 根据环境选择测试源

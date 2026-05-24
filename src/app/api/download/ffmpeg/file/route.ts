@@ -6,7 +6,7 @@ import { Readable } from 'stream';
 import { verifyApiAuth } from '@/lib/auth';
 import { getFfmpegOutputFile } from '@/lib/ffmpeg-download';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 export const fetchCache = 'force-no-store';
 
 function unauthorized() {
@@ -14,6 +14,17 @@ function unauthorized() {
 }
 
 export async function GET(request: NextRequest) {
+  // Edge runtime guard
+  if (process.env.NEXT_RUNTIME === 'edge') {
+    return NextResponse.json(
+      {
+        error:
+          'FFmpeg 文件下载功能仅在 Node.js 环境下可用，Cloudflare Pages (Edge) 暂不支持直接流式读取本地文件。',
+      },
+      { status: 501 },
+    );
+  }
+
   const authResult = verifyApiAuth(request);
   if (!authResult.isValid) {
     return unauthorized();
