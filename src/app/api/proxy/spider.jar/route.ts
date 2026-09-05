@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { getSpiderJar, getSpiderJarByMd5 } from '@/lib/spiderJar';
 
-export const runtime = 'edge';
 export const dynamic = 'force-dynamic'; // 强制动态渲染，避免构建时超时
 
 // Spider JAR 本地代理端点 - 使用统一的 jar 获取逻辑

@@ -6,8 +6,6 @@ import {
   toPrivateLibraryErrorMessage,
 } from '@/lib/private-library';
 
-export const runtime = 'edge';
-
 export async function GET(request: NextRequest) {
   const authResult = verifyApiAuth(request);
   if (!authResult.isValid) {

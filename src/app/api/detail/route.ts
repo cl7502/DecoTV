@@ -16,8 +16,6 @@ import {
 } from '@/lib/private-library';
 import { SearchResult } from '@/lib/types';
 
-export const runtime = 'edge';
-
 export async function GET(request: NextRequest) {
   const authResult = verifyApiAuth(request);
   if (!authResult.isValid) {

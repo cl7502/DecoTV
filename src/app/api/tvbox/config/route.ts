@@ -125,7 +125,6 @@ function resolveClientRegion(req: NextRequest, searchParams: URLSearchParams) {
 
 // 旧的 selectPublicSpider 已被新的 getSpiderJar 方案取代，保留状态结构供兼容（不再调用）
 
-export const runtime = 'edge';
 export const dynamic = 'force-dynamic'; // 强制动态渲染，避免构建时获取JAR超时
 
 // TVBox 订阅格式 - 标准 TVBox/猫影视 格式

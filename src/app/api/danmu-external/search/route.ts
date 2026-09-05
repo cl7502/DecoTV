@@ -13,8 +13,6 @@ import {
   isDandanplayRelayRequest,
 } from '@/lib/dandanplay';
 
-export const runtime = 'edge';
-
 const SEARCH_TIMEOUT_MS = 20_000;
 const CUSTOM_SEARCH_ANIME_LIMIT = 10;
 const OFFICIAL_SEARCH_CACHE_CONTROL =

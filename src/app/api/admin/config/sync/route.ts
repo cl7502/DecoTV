@@ -6,8 +6,6 @@ import { AdminConfig } from '@/lib/admin.types';
 import { persistAdminConfigMutation } from '@/lib/admin-config-mutation';
 import { verifyApiAuth } from '@/lib/auth';
 
-export const runtime = 'edge';
-
 /**
  * POST /api/admin/config/sync
  *

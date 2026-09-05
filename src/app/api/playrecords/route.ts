@@ -7,8 +7,6 @@ import { getConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { PlayRecord } from '@/lib/types';
 
-export const runtime = 'edge';
-
 function corsHeaders(): Record<string, string> {
   return {
     'Access-Control-Allow-Origin': '*',

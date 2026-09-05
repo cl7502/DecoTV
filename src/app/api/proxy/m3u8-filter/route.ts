@@ -20,8 +20,6 @@ import {
 } from '@/lib/proxy-security';
 import { getEffectiveRequestOrigin } from '@/lib/request-protocol';
 
-export const runtime = 'edge';
-
 const DEFAULT_UA =
   'Mozilla/5.0 (Linux; Android 10; AndroidTV) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';

@@ -6,8 +6,6 @@ import { getConfig } from '@/lib/config';
 import { getBaseUrl, resolveUrl } from '@/lib/live';
 import { getEffectiveRequestOrigin } from '@/lib/request-protocol';
 
-export const runtime = 'edge';
-
 const M3U8_CONTENT_TYPE = 'application/vnd.apple.mpegurl';
 
 function withCorsHeaders(headers: Headers) {

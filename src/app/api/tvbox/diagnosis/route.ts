@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-export const runtime = 'edge';
-
 // TVBox配置体检端点
 export async function GET(req: NextRequest) {
   try {

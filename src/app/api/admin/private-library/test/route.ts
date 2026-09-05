@@ -8,8 +8,6 @@ import {
 } from '@/lib/private-library';
 import { normalizePrivateLibraryConfig } from '@/lib/private-library-config';
 
-export const runtime = 'edge';
-
 async function ensureAdmin(request: NextRequest) {
   const authResult = verifyApiAuth(request);
   if (!authResult.isLocalMode && !authResult.isValid) {

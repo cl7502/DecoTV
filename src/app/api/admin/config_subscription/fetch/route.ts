@@ -4,8 +4,6 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { verifyApiAuth } from '@/lib/auth';
 
-export const runtime = 'edge';
-
 export async function POST(request: NextRequest) {
   try {
     // 🔐 使用统一认证函数

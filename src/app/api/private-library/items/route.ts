@@ -13,8 +13,6 @@ import {
   toPrivateLibraryErrorMessage,
 } from '@/lib/private-library';
 
-export const runtime = 'edge';
-
 interface LibraryItemPayload {
   id: string;
   title: string;

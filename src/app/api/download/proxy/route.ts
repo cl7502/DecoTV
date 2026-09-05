@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { verifyApiAuth } from '@/lib/auth';
 
-export const runtime = 'edge';
 export const fetchCache = 'force-no-store';
 
 const DEFAULT_HEADERS: Record<string, string> = {

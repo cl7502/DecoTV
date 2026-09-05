@@ -16,7 +16,6 @@ import {
   resolvePanSouSearchUrl,
 } from '@/lib/pansou';
 
-export const runtime = 'edge';
 export const fetchCache = 'force-no-store';
 
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -355,7 +354,8 @@ export async function GET(request: NextRequest) {
     upstreamUrl: upstreamUrl.toString(),
     method: 'GET',
     runtimeConfig,
-    cacheControl: 'public, max-age=600, s-maxage=600, stale-while-revalidate=300',
+    cacheControl:
+      'public, max-age=600, s-maxage=600, stale-while-revalidate=300',
   });
 }
 

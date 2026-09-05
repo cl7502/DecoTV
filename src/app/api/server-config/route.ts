@@ -10,8 +10,6 @@ import {
   formatResolutionLabel,
 } from '@/lib/video-quality';
 
-export const runtime = 'edge';
-
 export async function GET(request: NextRequest) {
   console.log('server-config called: ', request.url);
 

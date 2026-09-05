@@ -8,8 +8,6 @@ import { verifyApiAuth } from '@/lib/auth';
 import { getConfig } from '@/lib/config';
 import { normalizePanSouConfig } from '@/lib/pansou';
 
-export const runtime = 'edge';
-
 type PanSouConfigPayload = Partial<NonNullable<AdminConfig['PanSouConfig']>> & {
   serverUrl?: string;
   token?: string;

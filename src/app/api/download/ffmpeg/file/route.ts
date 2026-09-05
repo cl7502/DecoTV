@@ -6,7 +6,6 @@ import { Readable } from 'stream';
 import { verifyApiAuth } from '@/lib/auth';
 import { getFfmpegOutputFile } from '@/lib/ffmpeg-download';
 
-export const runtime = 'edge';
 export const fetchCache = 'force-no-store';
 
 function unauthorized() {

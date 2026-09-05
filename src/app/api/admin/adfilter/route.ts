@@ -6,8 +6,6 @@ import { persistAdminConfigMutation } from '@/lib/admin-config-mutation';
 import { verifyApiAuth } from '@/lib/auth';
 import { getConfig, getLocalModeConfig } from '@/lib/config';
 
-export const runtime = 'edge';
-
 interface AdFilterPayload {
   enabled?: boolean;
 }

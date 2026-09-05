@@ -17,8 +17,6 @@ import {
 } from '@/lib/video-quality';
 import { yellowWords } from '@/lib/yellow';
 
-export const runtime = 'edge';
-
 const normalizedYellowWords = yellowWords.map((word) => word.toLowerCase());
 
 const containsYellowKeyword = (

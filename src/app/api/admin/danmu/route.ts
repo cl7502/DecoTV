@@ -1,4 +1,4 @@
-﻿/* eslint-disable no-console */
+/* eslint-disable no-console */
 
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -6,8 +6,6 @@ import type { AdminConfig, DanmuCustomNode } from '@/lib/admin.types';
 import { persistAdminConfigMutation } from '@/lib/admin-config-mutation';
 import { verifyApiAuth } from '@/lib/auth';
 import { getConfig, getLocalModeConfig } from '@/lib/config';
-
-export const runtime = 'edge';
 
 interface DanmuConfigPayload {
   enabled?: boolean;

@@ -2,8 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { getSpiderJar } from '@/lib/spiderJar';
 
-export const runtime = 'edge';
-
 // 专门的 spider.jar 服务端点
 // 优化加载性能，减少 SSL handshake 错误
 export async function GET(req: NextRequest) {

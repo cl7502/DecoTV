@@ -3,8 +3,6 @@ import * as cheerio from 'cheerio';
 import { unstable_cache } from 'next/cache';
 import { NextRequest, NextResponse } from 'next/server';
 
-export const runtime = 'edge';
-
 // API Keys (备用，主要使用爬虫)
 const API_KEY_A = '0ab215a8b1977939201640fa14c66bab';
 const API_KEY_B = '0df993c66c0c636e29ecbb5344252a4a';

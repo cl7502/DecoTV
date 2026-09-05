@@ -8,8 +8,6 @@ import {
   toPrivateLibraryErrorMessage,
 } from '@/lib/private-library';
 
-export const runtime = 'edge';
-
 interface ScanBody {
   connectorId?: string;
 }

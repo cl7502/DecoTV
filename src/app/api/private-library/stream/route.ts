@@ -6,8 +6,6 @@ import {
   toPrivateLibraryErrorMessage,
 } from '@/lib/private-library';
 
-export const runtime = 'edge';
-
 function mapStreamError(status: number): string {
   if (status === 401 || status === 403) {
     return '私人影库鉴权失败，请检查连接配置';

@@ -4,8 +4,6 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { getConfig } from '@/lib/config';
 
-export const runtime = 'edge';
-
 type StreamType = 'm3u8' | 'mp4' | 'flv' | 'unknown';
 
 function detectTypeFromContentType(contentType: string | null): StreamType {

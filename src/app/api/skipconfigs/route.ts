@@ -7,8 +7,6 @@ import { getConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { SkipConfig } from '@/lib/types';
 
-export const runtime = 'edge';
-
 async function resolveUsername(
   request: NextRequest,
 ): Promise<{ username: string } | NextResponse> {

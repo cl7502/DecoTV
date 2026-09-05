@@ -12,7 +12,6 @@ import {
   startFfmpegDownload,
 } from '@/lib/ffmpeg-download';
 
-export const runtime = 'edge';
 export const fetchCache = 'force-no-store';
 
 type StartActionPayload = {

@@ -7,8 +7,6 @@ import { SimpleCrypto } from '@/lib/crypto';
 import { db } from '@/lib/db';
 import { CURRENT_VERSION } from '@/lib/version';
 
-export const runtime = 'edge';
-
 /**
  * 使用 Web 标准 CompressionStream 进行 Gzip 压缩 (兼容 Edge)
  */

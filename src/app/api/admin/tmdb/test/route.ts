@@ -4,8 +4,6 @@ import { verifyApiAuth } from '@/lib/auth';
 import { getConfig } from '@/lib/config';
 import { isTmdbEnabled, TmdbError, tmdbSearch } from '@/lib/tmdb';
 
-export const runtime = 'edge';
-
 async function ensureAdmin(request: NextRequest) {
   const authResult = verifyApiAuth(request);
   if (!authResult.isLocalMode && !authResult.isValid) {

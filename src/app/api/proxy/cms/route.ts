@@ -5,7 +5,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { resolveAdultFilter } from '@/lib/adult-filter';
 import { getConfig } from '@/lib/config';
 
-export const runtime = 'edge';
 export const fetchCache = 'force-no-store';
 
 const ALLOWED_PATTERNS = [

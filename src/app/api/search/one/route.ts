@@ -12,8 +12,6 @@ import {
 } from '@/lib/video-quality';
 import { yellowWords } from '@/lib/yellow';
 
-export const runtime = 'edge';
-
 // OrionTV 兼容接口
 export async function GET(request: NextRequest) {
   // 使用统一的认证函数，支持本地模式和数据库模式

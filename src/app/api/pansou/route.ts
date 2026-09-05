@@ -6,7 +6,6 @@ import {
   POST as searchPostHandler,
 } from './search/route';
 
-export const runtime = 'edge';
 export const fetchCache = 'force-no-store';
 
 export async function GET(request: NextRequest) {

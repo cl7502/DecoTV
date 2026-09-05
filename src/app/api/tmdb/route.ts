@@ -12,8 +12,6 @@ import {
   tmdbSearch,
 } from '@/lib/tmdb';
 
-export const runtime = 'edge';
-
 type SearchType = 'movie' | 'tv' | 'multi';
 type DetailType = 'movie' | 'tv';
 

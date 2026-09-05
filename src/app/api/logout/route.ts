@@ -2,8 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { AUTH_COOKIE_NAME, getAuthCookieClearOptions } from '@/lib/auth-cookie';
 
-export const runtime = 'edge';
-
 export async function POST(request: NextRequest) {
   const response = NextResponse.json({ ok: true });
 

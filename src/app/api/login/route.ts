@@ -12,8 +12,6 @@ import { getConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import { getEffectiveRequestOrigin } from '@/lib/request-protocol';
 
-export const runtime = 'edge';
-
 // 读取存储类型环境变量，默认 localstorage
 const STORAGE_TYPE =
   (process.env.NEXT_PUBLIC_STORAGE_TYPE as

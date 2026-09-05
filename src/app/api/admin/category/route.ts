@@ -6,8 +6,6 @@ import { persistAdminConfigMutation } from '@/lib/admin-config-mutation';
 import { verifyApiAuth } from '@/lib/auth';
 import { getConfig } from '@/lib/config';
 
-export const runtime = 'edge';
-
 // 支持的操作类型
 type Action = 'add' | 'disable' | 'enable' | 'delete' | 'sort';
 

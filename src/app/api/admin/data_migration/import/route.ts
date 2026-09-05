@@ -11,8 +11,6 @@ import { configSelfCheck } from '@/lib/config';
 import { SimpleCrypto } from '@/lib/crypto';
 import { db } from '@/lib/db';
 
-export const runtime = 'edge';
-
 /**
  * 将 Base64 字符串转换为 Uint8Array (兼容 Edge)
  */
@@ -30,7 +28,7 @@ function base64ToUint8Array(base64: string): Uint8Array {
  * 使用 Web 标准 DecompressionStream 进行 Gzip 解压 (兼容 Edge)
  */
 async function decompressGzip(data: Uint8Array): Promise<string> {
-  const stream = new Blob([data]).stream();
+  const stream = new Blob([new Uint8Array(data)]).stream();
   const decompressionStream = new DecompressionStream('gzip');
   const decompressedStream = stream.pipeThrough(decompressionStream);
   const reader = decompressedStream.getReader();

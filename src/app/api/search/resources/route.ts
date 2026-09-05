@@ -4,8 +4,6 @@ import { resolveAdultFilter } from '@/lib/adult-filter';
 import { getAuthInfoFromCookie, verifyApiAuth } from '@/lib/auth';
 import { getAvailableApiSites, getConfig } from '@/lib/config';
 
-export const runtime = 'edge';
-
 // OrionTV 兼容接口 - 获取可用的视频源列表
 export async function GET(request: NextRequest) {
   // 使用统一的认证函数，支持本地模式和数据库模式
