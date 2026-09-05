@@ -53,6 +53,7 @@ export const DEFAULT_AD_FILTER_CONFIG: AdFilterConfig = {
     'iqiyiad.',
     'iqiyi.com/cupid',
     'cupid.iqiyi',
+    'iqiyi.hbuioo.com',
     'mgtvad.',
     'admaster.',
     'miaozhen.',
@@ -74,6 +75,22 @@ export const DEFAULT_AD_FILTER_CONFIG: AdFilterConfig = {
     'preroll',
     'midroll',
     'postroll',
+    'ffzyad',
+    'vip.ffzyad.com',
+    'bytegoofy.com',
+    'mimg.0c1q0l.cn',
+    'mc.usihnbcq.cn',
+    'wan.51img1.com',
+    'casino',
+    'macau',
+    'aomen',
+    'gambling',
+    'bet365',
+    '1xbet',
+    '188bet',
+    '22bet',
+    'bookmaker',
+    'sportsbook',
   ],
   safeDomains: [
     'hhuus.com',
@@ -105,6 +122,30 @@ export const DEFAULT_AD_FILTER_CONFIG: AdFilterConfig = {
   ],
 };
 
+const MAX_HEURISTIC_REMOVAL_RATIO = 0.35;
+const MIN_LONG_FORM_DURATION = 10 * 60;
+const MIN_LONG_FORM_REMAINING_RATIO = 0.5;
+
+const FORCE_AD_DOMAIN_PATTERNS = [
+  'ffzyad',
+  'vip.ffzyad.com',
+  'bytegoofy.com',
+  'mimg.0c1q0l.cn',
+  'mc.usihnbcq.cn',
+  'wan.51img1.com',
+  'iqiyi.hbuioo.com',
+  'casino',
+  'macau',
+  'aomen',
+  'gambling',
+  'bet365',
+  '1xbet',
+  '188bet',
+  '22bet',
+  'bookmaker',
+  'sportsbook',
+];
+
 interface ParsedSegment {
   duration: number;
   discontinuityGroup: number;
@@ -129,9 +170,36 @@ export interface FilterResult {
   changed: boolean;
 }
 
+export function getPlaylistMediaStats(content: string) {
+  const durations = Array.from(content.matchAll(/^#EXTINF:([\d.]+)/gim))
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  return {
+    segmentCount: durations.length,
+    totalDuration: durations.reduce((sum, value) => sum + value, 0),
+  };
+}
+
+export function shouldBypassFilteredPlaylist(
+  original: string,
+  filtered: string,
+) {
+  const before = getPlaylistMediaStats(original);
+  const after = getPlaylistMediaStats(filtered);
+  if (before.segmentCount < 8 || before.totalDuration < 300) return false;
+  if (after.segmentCount === 0 || after.totalDuration === 0) return true;
+
+  const segmentRatio = after.segmentCount / before.segmentCount;
+  const durationRatio = after.totalDuration / before.totalDuration;
+  return segmentRatio < 0.5 || durationRatio < 0.6;
+}
+
 function isAdDomain(url: string, config: AdFilterConfig): boolean {
   if (!url) return false;
   const lowerUrl = url.toLowerCase();
+  for (const pattern of FORCE_AD_DOMAIN_PATTERNS) {
+    if (lowerUrl.includes(pattern)) return true;
+  }
   for (const safe of config.safeDomains) {
     if (lowerUrl.includes(safe)) return false;
   }
@@ -243,6 +311,43 @@ function detectAdSegments(
   return adSegmentIndices;
 }
 
+function detectDomainAdSegments(segments: ParsedSegment[]): Set<number> {
+  const adSegmentIndices = new Set<number>();
+  segments.forEach((seg, idx) => {
+    if (seg.isAdDomain) adSegmentIndices.add(idx);
+  });
+  return adSegmentIndices;
+}
+
+function sumSegmentDuration(
+  segments: ParsedSegment[],
+  indices: Set<number>,
+): number {
+  let duration = 0;
+  indices.forEach((idx) => {
+    duration += segments[idx]?.duration || 0;
+  });
+  return duration;
+}
+
+function shouldFallbackToDomainOnlyFiltering(
+  parsed: ParsedM3U8,
+  adsDuration: number,
+): boolean {
+  if (parsed.totalDuration <= 0 || adsDuration <= 0) {
+    return false;
+  }
+
+  const removalRatio = adsDuration / parsed.totalDuration;
+  const remainingDuration = parsed.totalDuration - adsDuration;
+
+  return (
+    removalRatio > MAX_HEURISTIC_REMOVAL_RATIO ||
+    (parsed.totalDuration >= MIN_LONG_FORM_DURATION &&
+      remainingDuration / parsed.totalDuration < MIN_LONG_FORM_REMAINING_RATIO)
+  );
+}
+
 /**
  * 过滤 M3U8 文本，移除广告分段。
  *
@@ -271,16 +376,26 @@ export function filterM3U8(
     return { filtered: content, adsRemoved: 0, adsDuration: 0, changed: false };
   }
 
-  const adIndices = detectAdSegments(parsed.segments, config);
+  let adIndices = detectAdSegments(parsed.segments, config);
 
   if (adIndices.size === 0) {
     return { filtered: content, adsRemoved: 0, adsDuration: 0, changed: false };
   }
 
-  let adsDuration = 0;
-  adIndices.forEach((idx) => {
-    adsDuration += parsed.segments[idx].duration;
-  });
+  let adsDuration = sumSegmentDuration(parsed.segments, adIndices);
+  if (shouldFallbackToDomainOnlyFiltering(parsed, adsDuration)) {
+    adIndices = detectDomainAdSegments(parsed.segments);
+    adsDuration = sumSegmentDuration(parsed.segments, adIndices);
+
+    if (adIndices.size === 0) {
+      return {
+        filtered: content,
+        adsRemoved: 0,
+        adsDuration: 0,
+        changed: false,
+      };
+    }
+  }
 
   const linesToRemove = new Set<number>();
   adIndices.forEach((idx) => {

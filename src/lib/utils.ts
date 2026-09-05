@@ -3,31 +3,43 @@ import he from 'he';
 import Hls from 'hls.js';
 
 import { resolveImageUrl } from './image-url';
+import { isLikelyHlsUrl } from './player/hls-url';
 
 export function processImageUrl(originalUrl: string): string {
   return resolveImageUrl(originalUrl, { wsrvWidth: 256 });
 }
 
 export type VideoSourceTestStatus = 'ok' | 'partial' | 'failed';
+export type VideoSourceFailureKind =
+  | 'empty'
+  | 'timeout'
+  | 'resolver'
+  | 'manifest'
+  | 'fragment'
+  | 'media'
+  | 'network'
+  | 'unsupported'
+  | 'unknown';
+export type PlaybackMediaType = 'hls' | 'file' | 'page' | 'unknown';
 
 export interface VideoSourceTestResult {
   quality: string;
   loadSpeed: string;
   pingTime: number;
   speedKBps?: number;
+  startupTimeMs?: number;
   hasError?: boolean;
   status?: VideoSourceTestStatus;
   message?: string;
   playable?: boolean;
   testedAt?: number;
+  resolvedUrl?: string;
+  mediaType?: PlaybackMediaType;
+  failureKind?: VideoSourceFailureKind;
 }
 
 const DEFAULT_SOURCE_TEST_TIMEOUT_MS = 10000;
 const NATIVE_REACHABILITY_TIMEOUT_MS = 3000;
-
-function isLikelyHlsUrl(url: string): boolean {
-  return /\.m3u8(?:$|[?#])/i.test(url) || /\/m3u8(?:$|[/?#])/i.test(url);
-}
 
 function qualityFromWidth(width: number): string {
   if (!width || width <= 0) return '未知';
@@ -52,10 +64,7 @@ export function formatVideoLoadSpeed(speedKBps?: number): string {
   if (!speedKBps || !Number.isFinite(speedKBps) || speedKBps <= 0) {
     return '未知';
   }
-  if (speedKBps >= 1024) {
-    return `${(speedKBps / 1024).toFixed(1)} MB/s`;
-  }
-  return `${speedKBps.toFixed(1)} KB/s`;
+  return `${(speedKBps / 1024).toFixed(2)} MB/s`;
 }
 
 function getStatsTime(stats: any, key: 'start' | 'first' | 'end'): number {
@@ -82,10 +91,18 @@ function getStatsLoadedBytes(stats: any, payload: any): number {
 async function probeUrlReachability(
   url: string,
   timeoutMs = NATIVE_REACHABILITY_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<{ reachable: boolean; responseMs: number; message?: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = performance.now();
+  const abortFromParent = () => controller.abort();
+
+  if (signal?.aborted) {
+    controller.abort();
+  } else {
+    signal?.addEventListener('abort', abortFromParent, { once: true });
+  }
 
   try {
     const response = await fetch(url, {
@@ -113,6 +130,7 @@ async function probeUrlReachability(
     };
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', abortFromParent);
   }
 }
 
@@ -120,43 +138,63 @@ function buildResult(input: {
   quality: string;
   pingTime: number;
   speedKBps?: number;
+  startupTimeMs?: number;
   status: VideoSourceTestStatus;
   message?: string;
   playable?: boolean;
+  failureKind?: VideoSourceFailureKind;
+  resolvedUrl?: string;
+  mediaType?: PlaybackMediaType;
 }): VideoSourceTestResult {
   return {
     quality: input.quality || '未知',
     loadSpeed: formatVideoLoadSpeed(input.speedKBps),
     pingTime: Math.max(0, Math.round(input.pingTime || 0)),
     speedKBps: input.speedKBps,
+    startupTimeMs:
+      typeof input.startupTimeMs === 'number'
+        ? Math.max(0, Math.round(input.startupTimeMs))
+        : undefined,
     hasError: input.status === 'failed',
     status: input.status,
     message: input.message,
     playable: input.playable,
     testedAt: Date.now(),
+    resolvedUrl: input.resolvedUrl,
+    mediaType: input.mediaType,
+    failureKind: input.failureKind,
   };
 }
 
 async function measureNativeVideoSource(
   url: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<VideoSourceTestResult> {
   return new Promise((resolve) => {
     const video = document.createElement('video');
     video.muted = true;
     video.preload = 'metadata';
-    video.crossOrigin = 'anonymous';
 
     let finished = false;
     let pingTime = 0;
     const startedAt = performance.now();
     let timeout: ReturnType<typeof setTimeout> | null = null;
     let failureCheckStarted = false;
+    let abortHandler: (() => void) | null = null;
 
-    const finish = (status: VideoSourceTestStatus, message?: string) => {
+    const finish = (
+      status: VideoSourceTestStatus,
+      message?: string,
+      failureKind?: VideoSourceFailureKind,
+    ) => {
       if (finished) return;
       finished = true;
+      const elapsedMs = performance.now() - startedAt;
       if (timeout) clearTimeout(timeout);
+      if (abortHandler && signal) {
+        signal.removeEventListener('abort', abortHandler);
+      }
       video.removeAttribute('src');
       video.load();
       video.remove();
@@ -164,13 +202,24 @@ async function measureNativeVideoSource(
       resolve(
         buildResult({
           quality: qualityFromWidth(video.videoWidth),
-          pingTime: pingTime || performance.now() - startedAt,
+          pingTime: pingTime || elapsedMs,
+          startupTimeMs: status === 'ok' ? elapsedMs : undefined,
           status,
           message,
           playable: status !== 'failed',
+          failureKind,
+          resolvedUrl: url,
+          mediaType: 'file',
         }),
       );
     };
+
+    abortHandler = () => finish('failed', '测速已取消', 'unknown');
+    if (signal?.aborted) {
+      abortHandler();
+      return;
+    }
+    signal?.addEventListener('abort', abortHandler, { once: true });
 
     const finishAfterReachabilityCheck = async (fallbackMessage: string) => {
       if (failureCheckStarted || finished) return;
@@ -178,14 +227,19 @@ async function measureNativeVideoSource(
       const probe = await probeUrlReachability(
         url,
         Math.min(NATIVE_REACHABILITY_TIMEOUT_MS, timeoutMs),
+        signal,
       );
       if (finished) return;
 
       if (probe.reachable) {
         pingTime = probe.responseMs;
-        finish('partial', `${fallbackMessage}，但地址可访问`);
+        finish('partial', `${fallbackMessage}，但地址可访问`, 'media');
       } else {
-        finish('failed', probe.message || fallbackMessage);
+        finish(
+          'failed',
+          probe.message || fallbackMessage,
+          probe.message === '连接超时' ? 'timeout' : 'network',
+        );
       }
     };
 
@@ -204,7 +258,7 @@ async function measureNativeVideoSource(
 
 export async function getVideoResolutionFromM3u8(
   m3u8Url: string,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<VideoSourceTestResult> {
   if (!m3u8Url) {
     return buildResult({
@@ -212,6 +266,7 @@ export async function getVideoResolutionFromM3u8(
       pingTime: 0,
       status: 'failed',
       message: '播放地址为空',
+      failureKind: 'empty',
     });
   }
 
@@ -221,20 +276,22 @@ export async function getVideoResolutionFromM3u8(
       pingTime: 0,
       status: 'failed',
       message: '当前环境无法测速',
+      failureKind: 'unsupported',
+      resolvedUrl: m3u8Url,
+      mediaType: isLikelyHlsUrl(m3u8Url) ? 'hls' : 'unknown',
     });
   }
 
   const timeoutMs = options.timeoutMs || DEFAULT_SOURCE_TEST_TIMEOUT_MS;
 
   if (!isLikelyHlsUrl(m3u8Url) || !Hls.isSupported()) {
-    return measureNativeVideoSource(m3u8Url, timeoutMs);
+    return measureNativeVideoSource(m3u8Url, timeoutMs, options.signal);
   }
 
   return new Promise((resolve) => {
     const video = document.createElement('video');
     video.muted = true;
     video.preload = 'metadata';
-    video.crossOrigin = 'anonymous';
 
     const hls = new Hls({
       autoStartLoad: true,
@@ -251,13 +308,18 @@ export async function getVideoResolutionFromM3u8(
     let quality = '未知';
     let pingTime = 0;
     let speedKBps = 0;
+    let startupTimeMs = 0;
     let fragmentStartTime = 0;
     let lastMessage = '';
     const startedAt = performance.now();
     let timeout: ReturnType<typeof setTimeout> | null = null;
+    let abortHandler: (() => void) | null = null;
 
     const cleanup = () => {
       if (timeout) clearTimeout(timeout);
+      if (abortHandler && options.signal) {
+        options.signal.removeEventListener('abort', abortHandler);
+      }
       try {
         hls.destroy();
       } catch {
@@ -272,7 +334,11 @@ export async function getVideoResolutionFromM3u8(
       video.remove();
     };
 
-    const finish = (status?: VideoSourceTestStatus, message?: string) => {
+    const finish = (
+      status?: VideoSourceTestStatus,
+      message?: string,
+      failureKind?: VideoSourceFailureKind,
+    ) => {
       if (finished) return;
       finished = true;
       cleanup();
@@ -290,22 +356,40 @@ export async function getVideoResolutionFromM3u8(
           quality,
           pingTime: pingTime || performance.now() - startedAt,
           speedKBps: speedKBps || undefined,
+          startupTimeMs: startupTimeMs || undefined,
           status: finalStatus,
           message: message || lastMessage,
           playable,
+          resolvedUrl: m3u8Url,
+          mediaType: 'hls',
+          failureKind:
+            failureKind ||
+            (finalStatus === 'failed'
+              ? 'unknown'
+              : finalStatus === 'partial'
+                ? 'fragment'
+                : undefined),
         }),
       );
     };
+
+    abortHandler = () => finish('failed', '测速已取消', 'unknown');
+    if (options.signal?.aborted) {
+      abortHandler();
+      return;
+    }
+    options.signal?.addEventListener('abort', abortHandler, { once: true });
 
     timeout = setTimeout(() => {
       finish(
         undefined,
         manifestLoaded ? '测速超时，已确认源可连接' : '连接超时',
+        'timeout',
       );
     }, timeoutMs);
 
     const maybeFinish = () => {
-      if (speedKBps > 0 && (playable || quality !== '未知')) {
+      if (speedKBps > 0) {
         finish('ok', '分片测速完成');
       }
     };
@@ -322,9 +406,9 @@ export async function getVideoResolutionFromM3u8(
     };
     video.onerror = () => {
       if (manifestLoaded || speedKBps > 0) {
-        finish('partial', '媒体元素未返回元数据，但源已连通');
+        finish('partial', '媒体元素未返回元数据，但源已连通', 'media');
       } else {
-        finish('failed', '浏览器未能加载媒体，未确认源可用');
+        finish('failed', '浏览器未能加载媒体，未确认源可用', 'media');
       }
     };
 
@@ -362,6 +446,7 @@ export async function getVideoResolutionFromM3u8(
 
       if (loadedBytes > 0 && loadTime > 0) {
         speedKBps = loadedBytes / 1024 / (loadTime / 1000);
+        startupTimeMs ||= performance.now() - startedAt;
         lastMessage = '媒体分片可访问';
       }
 
@@ -376,22 +461,34 @@ export async function getVideoResolutionFromM3u8(
     hls.on(Hls.Events.ERROR, (_event: any, data: any) => {
       if (!data?.fatal) return;
       const details = String(data?.details || '');
-      const message = (() => {
+      const { message, failureKind } = (() => {
         if (/manifest/i.test(details)) {
-          return '播放清单不可访问或格式异常';
+          return {
+            message: '播放清单不可访问或格式异常',
+            failureKind: 'manifest' as const,
+          };
         }
         if (/frag/i.test(details)) {
-          return '媒体分片加载失败，源不稳定';
+          return {
+            message: '媒体分片加载失败，源不稳定',
+            failureKind: 'fragment' as const,
+          };
         }
         if (/buffer|media/i.test(details)) {
-          return '浏览器解码失败，源可能不兼容';
+          return {
+            message: '浏览器解码失败，源可能不兼容',
+            failureKind: 'media' as const,
+          };
         }
-        return data?.details || data?.type || 'HLS 加载失败';
+        return {
+          message: data?.details || data?.type || 'HLS 加载失败',
+          failureKind: 'unknown' as const,
+        };
       })();
       if (manifestLoaded || speedKBps > 0) {
-        finish('partial', message);
+        finish('partial', message, failureKind);
       } else {
-        finish('failed', message);
+        finish('failed', message, failureKind);
       }
     });
 

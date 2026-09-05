@@ -43,16 +43,6 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v5
 
-      - name: Check built-in dandanplay credentials
-        if: github.event_name != 'pull_request'
-        env:
-          DANDANPLAY_APP_ID: ${{ secrets.DANDANPLAY_APP_ID }}
-          DANDANPLAY_APP_SECRET: ${{ secrets.DANDANPLAY_APP_SECRET }}
-        run: |
-          if [ -z "$DANDANPLAY_APP_ID" ] || [ -z "$DANDANPLAY_APP_SECRET" ]; then
-            echo "::warning::DANDANPLAY_APP_ID/DANDANPLAY_APP_SECRET not set; image will be built without built-in 弹弹play credentials."
-          fi
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -74,6 +64,16 @@ jobs:
           echo "version=v${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Detected version: v${VERSION}"
 
+      - name: Prepare build metadata
+        id: buildinfo
+        run: |
+          BUILD_TIMESTAMP=$(TZ=Asia/Shanghai date +%Y%m%d%H%M%S)
+          COMMIT_DATE=$(git show -s --format=%cI "${GITHUB_SHA}")
+          echo "timestamp=${BUILD_TIMESTAMP}" >> "$GITHUB_OUTPUT"
+          echo "commit_date=${COMMIT_DATE}" >> "$GITHUB_OUTPUT"
+          echo "Build timestamp: ${BUILD_TIMESTAMP}"
+          echo "Commit date: ${COMMIT_DATE}"
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v6
@@ -92,12 +92,14 @@ jobs:
           file: ./Dockerfile
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_TIMESTAMP=${{ steps.buildinfo.outputs.timestamp }}
+            GIT_COMMIT_SHA=${{ github.sha }}
+            GIT_COMMIT_DATE=${{ steps.buildinfo.outputs.commit_date }}
+            GIT_REF_NAME=${{ github.ref_name }}
           tags: |
             ghcr.io/${{ steps.lowercase.outputs.owner }}/decotv:${{ github.event.inputs.tag || 'latest' }}
             ghcr.io/${{ steps.lowercase.outputs.owner }}/decotv:${{ steps.version.outputs.version }}
-          build-args: |
-            DANDANPLAY_APP_ID=${{ secrets.DANDANPLAY_APP_ID || '' }}
-            DANDANPLAY_APP_SECRET=${{ secrets.DANDANPLAY_APP_SECRET || '' }}
           outputs: type=image,name=ghcr.io/${{ steps.lowercase.outputs.owner }}/decotv,name-canonical=true,push=true
 
       - name: Export digest

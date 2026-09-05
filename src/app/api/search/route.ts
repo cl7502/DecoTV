@@ -8,6 +8,11 @@ import { getAvailableApiSites, getCacheTime, getConfig } from '@/lib/config';
 import { searchFromApi } from '@/lib/downstream';
 import { rewriteEpisodesForAdFilterMany } from '@/lib/episode-rewriter';
 import { rankSearchResults } from '@/lib/search-ranking';
+import {
+  buildResolutionFilterFromSearchParams,
+  filterSearchResultsByResolution,
+  formatResolutionLabel,
+} from '@/lib/video-quality';
 import { yellowWords } from '@/lib/yellow';
 
 export const runtime = 'edge';
@@ -26,6 +31,7 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const query = searchParams.get('q');
+  const resolutionFilter = buildResolutionFilterFromSearchParams(searchParams);
 
   if (!query) {
     const cacheTime = await getCacheTime();
@@ -138,6 +144,11 @@ export async function GET(request: NextRequest) {
       normalizedQuery || query,
     );
 
+    flattenedResults = filterSearchResultsByResolution(
+      flattenedResults,
+      resolutionFilter,
+    );
+
     // ✂️ 精简数据：移除或缩减非必要字段以减少传输流量
     flattenedResults = flattenedResults.map((item) => {
       const { desc, ...rest } = item;
@@ -180,6 +191,10 @@ export async function GET(request: NextRequest) {
           'Vercel-CDN-Cache-Control': `public, s-maxage=${sMaxAge}`,
           'Netlify-Vary': 'query',
           'X-Adult-Filter': shouldFilterAdult ? 'enabled' : 'disabled', // 调试信息
+          'X-Min-Resolution': resolutionFilter.minLevel
+            ? formatResolutionLabel(resolutionFilter.minLevel)
+            : 'off',
+          'X-Resolution-Strict': resolutionFilter.strict ? 'true' : 'false',
         },
       },
     );

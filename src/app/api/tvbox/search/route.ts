@@ -3,8 +3,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getConfig } from '@/lib/config';
-import { searchFromApi } from '@/lib/downstream';
+import { getDetailFromApi, searchFromApi } from '@/lib/downstream';
 import { rankSearchResults } from '@/lib/search-ranking';
+import {
+  formatTvboxPlayUrl,
+  getLastNonEmptySearchParam,
+} from '@/lib/tvbox-utils';
+import type { SearchResult } from '@/lib/types';
+import {
+  buildResolutionFilterFromSearchParams,
+  filterSearchResultsByResolution,
+  formatResolutionLabel,
+} from '@/lib/video-quality';
 import { yellowWords } from '@/lib/yellow';
 
 export const runtime = 'edge';
@@ -22,6 +32,56 @@ const containsYellowKeyword = (
     );
   });
 };
+
+function buildTvboxHeaders(
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    ...extra,
+  };
+}
+
+function toTvboxVod(result: SearchResult) {
+  const raw = result as SearchResult & Record<string, unknown>;
+  const playUrl = formatTvboxPlayUrl(result.episodes, result.episodes_titles);
+
+  return {
+    vod_id: result.id,
+    vod_name: result.title,
+    vod_pic: result.poster,
+    vod_remarks:
+      String(raw.remarks || raw.note || raw.remark || '') ||
+      result.resolution ||
+      result.quality_tag ||
+      '',
+    vod_resolution: result.resolution || '',
+    vod_year: String(raw.year || result.year || ''),
+    vod_area: String(raw.area || ''),
+    vod_actor: String(raw.actor || ''),
+    vod_director: String(raw.director || ''),
+    vod_content: result.desc || '',
+    type_name: result.type_name || '',
+    vod_play_from: playUrl
+      ? result.source_name || result.source || 'DecoTV'
+      : '',
+    vod_play_url: playUrl,
+  };
+}
+
+function buildTvboxListResponse(list: Array<ReturnType<typeof toTvboxVod>>) {
+  return {
+    code: 1,
+    msg: 'success',
+    page: 1,
+    pagecount: 1,
+    limit: list.length,
+    total: list.length,
+    list,
+  };
+}
 
 function isOrionClient(request: NextRequest): boolean {
   const ua = (request.headers.get('user-agent') || '').toLowerCase();
@@ -54,13 +114,28 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const sourceKey = searchParams.get('source');
-    const query = searchParams.get('wd');
+    const ac = (searchParams.get('ac') || '').toLowerCase();
+    const detailId = getLastNonEmptySearchParam(searchParams, [
+      'ids',
+      'id',
+      'vod_id',
+    ]);
+    const wantsDetail = ac === 'detail' || Boolean(detailId);
+    const query = getLastNonEmptySearchParam(searchParams, [
+      'wd',
+      'q',
+      'key',
+      'keyword',
+      'searchword',
+    ]);
     const filterRaw = searchParams.get('filter');
     const filterParam = (filterRaw ?? 'on').toLowerCase();
     const strictMode = searchParams.get('strict') === '1';
+    const resolutionFilter =
+      buildResolutionFilterFromSearchParams(searchParams);
 
     // 参数验证
-    if (!sourceKey || !query) {
+    if (!sourceKey || (!query && !wantsDetail)) {
       return NextResponse.json(
         {
           code: 400,
@@ -111,6 +186,77 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    if (wantsDetail && shouldFilter && targetSource.is_adult) {
+      return NextResponse.json(
+        {
+          code: 1,
+          msg: '该视频源已被成人内容过滤策略禁用',
+          page: 1,
+          pagecount: 1,
+          limit: 0,
+          total: 0,
+          list: [],
+        },
+        {
+          status: 200,
+          headers: buildTvboxHeaders({
+            'Cache-Control': 'public, max-age=60, s-maxage=60',
+            'X-Filter-Applied': 'true',
+          }),
+        },
+      );
+    }
+
+    if (wantsDetail) {
+      if (!detailId) {
+        return NextResponse.json(
+          {
+            code: 400,
+            msg: '缺少详情参数: ids 或 id',
+            list: [],
+          },
+          { status: 400 },
+        );
+      }
+
+      try {
+        const detail = await getDetailFromApi(
+          {
+            key: targetSource.key,
+            name: targetSource.name,
+            api: targetSource.api,
+            detail: targetSource.detail,
+          },
+          detailId,
+        );
+
+        return NextResponse.json(buildTvboxListResponse([toTvboxVod(detail)]), {
+          headers: buildTvboxHeaders({
+            'Cache-Control': 'public, max-age=300, s-maxage=300',
+          }),
+        });
+      } catch (error) {
+        console.error('[TVBox Search Proxy] Detail error:', error);
+        return NextResponse.json(
+          {
+            code: 1,
+            msg: error instanceof Error ? error.message : '详情获取失败',
+            page: 1,
+            pagecount: 1,
+            limit: 0,
+            total: 0,
+            list: [],
+          },
+          {
+            status: 200,
+            headers: buildTvboxHeaders({
+              'Cache-Control': 'no-store',
+            }),
+          },
+        );
+      }
+    }
+
     console.log(
       `[TVBox Search Proxy] source=${sourceKey}, query="${query}", filter=${filterParam}, strict=${strictMode}, client=${
         isOrion ? 'orion' : 'generic'
@@ -133,13 +279,10 @@ export async function GET(request: NextRequest) {
         },
         {
           status: 200,
-          headers: {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type',
+          headers: buildTvboxHeaders({
             'Cache-Control': 'public, max-age=60, s-maxage=60',
             'X-Filter-Applied': 'true',
-          },
+          }),
         },
       );
     }
@@ -153,6 +296,10 @@ export async function GET(request: NextRequest) {
         detail: targetSource.detail,
       },
       query,
+      {
+        includeUnplayable: true,
+        skipCache: true,
+      },
     );
 
     console.log(
@@ -229,6 +376,18 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    if (results.length > 0) {
+      const beforeResolutionFilterCount = results.length;
+      results = filterSearchResultsByResolution(results, resolutionFilter);
+      if (resolutionFilter.minLevel) {
+        console.log(
+          `[TVBox Search Proxy] Resolution filter ${formatResolutionLabel(
+            resolutionFilter.minLevel,
+          )}${resolutionFilter.strict ? ' strict' : ''}: ${beforeResolutionFilterCount} → ${results.length}`,
+        );
+      }
+    }
+
     const processingTime = Date.now() - startTime;
     console.log(
       `[TVBox Search Proxy] Completed in ${processingTime}ms, returning ${results.length} results`,
@@ -236,44 +395,19 @@ export async function GET(request: NextRequest) {
 
     // 返回TVBox兼容的格式
     // TVBox期望的搜索API返回格式通常是MacCMS标准格式
-    const response = {
-      code: 1,
-      msg: 'success',
-      page: 1,
-      pagecount: 1,
-      limit: results.length,
-      total: results.length,
-      list: results.map((r) => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const raw = r as any;
-        return {
-          vod_id: r.id,
-          vod_name: r.title,
-          vod_pic: r.poster,
-          vod_remarks: raw.note || raw.remark || '',
-          vod_year: raw.year || '',
-          vod_area: raw.area || '',
-          vod_actor: raw.actor || '',
-          vod_director: raw.director || '',
-          vod_content: r.desc || '',
-          type_name: r.type_name || '',
-          // 保留原始数据以便详情页使用
-          vod_play_from: r.episodes ? 'DecoTV' : '',
-          vod_play_url: r.episodes ? r.episodes.join('#') : '',
-        };
-      }),
-    };
+    const response = buildTvboxListResponse(results.map(toTvboxVod));
 
     return NextResponse.json(response, {
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
+      headers: buildTvboxHeaders({
         'Cache-Control': 'public, max-age=300, s-maxage=300', // 5分钟缓存
         'X-Processing-Time': `${processingTime}ms`,
         'X-Result-Count': `${results.length}`,
         'X-Filter-Applied': shouldFilter ? 'true' : 'false',
-      },
+        'X-Min-Resolution': resolutionFilter.minLevel
+          ? formatResolutionLabel(resolutionFilter.minLevel)
+          : 'off',
+        'X-Resolution-Strict': resolutionFilter.strict ? 'true' : 'false',
+      }),
     });
   } catch (error) {
     console.error('[TVBox Search Proxy] Error:', error);

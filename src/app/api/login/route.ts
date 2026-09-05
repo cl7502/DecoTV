@@ -1,8 +1,16 @@
-/* eslint-disable no-console,@typescript-eslint/no-explicit-any */
+/* eslint-disable no-console */
 import { NextRequest, NextResponse } from 'next/server';
 
+import {
+  AUTH_COOKIE_NAME,
+  getAuthCookieClearOptions,
+  getAuthCookieExpires,
+  getAuthCookieOptions,
+} from '@/lib/auth-cookie';
+import { isPublicMode } from '@/lib/auth-mode';
 import { getConfig } from '@/lib/config';
 import { db } from '@/lib/db';
+import { getEffectiveRequestOrigin } from '@/lib/request-protocol';
 
 export const runtime = 'edge';
 
@@ -14,6 +22,20 @@ const STORAGE_TYPE =
     | 'upstash'
     | 'kvrocks'
     | undefined) || 'localstorage';
+
+function withCors(response: NextResponse, req: NextRequest): NextResponse {
+  const origin = req.headers.get('origin');
+  if (!origin || origin !== getEffectiveRequestOrigin(req)) {
+    return response;
+  }
+
+  response.headers.set('Access-Control-Allow-Origin', origin);
+  response.headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Cookie');
+  response.headers.set('Access-Control-Allow-Credentials', 'true');
+  response.headers.append('Vary', 'Origin');
+  return response;
+}
 
 // 生成签名
 async function generateSignature(
@@ -49,7 +71,13 @@ async function generateAuthCookie(
   role?: 'owner' | 'admin' | 'user',
   includePassword = false,
 ): Promise<string> {
-  const authData: any = { role: role || 'user' };
+  const authData: {
+    role: 'owner' | 'admin' | 'user';
+    password?: string;
+    username?: string;
+    signature?: string;
+    timestamp?: number;
+  } = { role: role || 'user' };
 
   // 只在需要时包含 password
   if (includePassword && password) {
@@ -69,6 +97,10 @@ async function generateAuthCookie(
 
 export async function POST(req: NextRequest) {
   try {
+    if (isPublicMode()) {
+      return withCors(NextResponse.json({ ok: true, mode: 'public' }), req);
+    }
+
     // 本地 / localStorage 模式——仅校验固定密码
     if (STORAGE_TYPE === 'localstorage') {
       const envPassword = process.env.PASSWORD;
@@ -78,15 +110,13 @@ export async function POST(req: NextRequest) {
         const response = NextResponse.json({ ok: true });
 
         // 清除可能存在的认证cookie
-        response.cookies.set('auth', '', {
-          path: '/',
-          expires: new Date(0),
-          sameSite: 'lax', // 改为 lax 以支持 PWA
-          httpOnly: false, // PWA 需要客户端可访问
-          secure: false, // 根据协议自动设置
-        });
+        response.cookies.set(
+          AUTH_COOKIE_NAME,
+          '',
+          getAuthCookieClearOptions(req),
+        );
 
-        return response;
+        return withCors(response, req);
       }
 
       const { password } = await req.json();
@@ -109,18 +139,15 @@ export async function POST(req: NextRequest) {
         'owner',
         true,
       ); // localstorage 模式包含 password
-      const expires = new Date();
-      expires.setDate(expires.getDate() + 7); // 7天过期
+      const expires = getAuthCookieExpires();
 
-      response.cookies.set('auth', cookieValue, {
-        path: '/',
-        expires,
-        sameSite: 'lax', // 改为 lax 以支持 PWA
-        httpOnly: false, // PWA 需要客户端可访问
-        secure: false, // 根据协议自动设置
-      });
+      response.cookies.set(
+        AUTH_COOKIE_NAME,
+        cookieValue,
+        getAuthCookieOptions(req, expires),
+      );
 
-      return response;
+      return withCors(response, req);
     }
 
     // 数据库 / redis 模式——校验用户名并尝试连接数据库
@@ -146,18 +173,15 @@ export async function POST(req: NextRequest) {
         'owner',
         false,
       ); // 数据库模式不包含 password
-      const expires = new Date();
-      expires.setDate(expires.getDate() + 7); // 7天过期
+      const expires = getAuthCookieExpires();
 
-      response.cookies.set('auth', cookieValue, {
-        path: '/',
-        expires,
-        sameSite: 'lax', // 改为 lax 以支持 PWA
-        httpOnly: false, // PWA 需要客户端可访问
-        secure: false, // 根据协议自动设置
-      });
+      response.cookies.set(
+        AUTH_COOKIE_NAME,
+        cookieValue,
+        getAuthCookieOptions(req, expires),
+      );
 
-      return response;
+      return withCors(response, req);
     } else if (username === process.env.USERNAME) {
       return NextResponse.json({ error: '用户名或密码错误' }, { status: 401 });
     }
@@ -186,18 +210,15 @@ export async function POST(req: NextRequest) {
         user?.role || 'user',
         false,
       ); // 数据库模式不包含 password
-      const expires = new Date();
-      expires.setDate(expires.getDate() + 7); // 7天过期
+      const expires = getAuthCookieExpires();
 
-      response.cookies.set('auth', cookieValue, {
-        path: '/',
-        expires,
-        sameSite: 'lax', // 改为 lax 以支持 PWA
-        httpOnly: false, // PWA 需要客户端可访问
-        secure: false, // 根据协议自动设置
-      });
+      response.cookies.set(
+        AUTH_COOKIE_NAME,
+        cookieValue,
+        getAuthCookieOptions(req, expires),
+      );
 
-      return response;
+      return withCors(response, req);
     } catch (err) {
       console.error('数据库验证失败', err);
       return NextResponse.json({ error: '数据库错误' }, { status: 500 });
@@ -206,4 +227,8 @@ export async function POST(req: NextRequest) {
     console.error('登录接口异常', error);
     return NextResponse.json({ error: '服务器错误' }, { status: 500 });
   }
+}
+
+export async function OPTIONS(req: NextRequest) {
+  return withCors(new NextResponse(null, { status: 204 }), req);
 }

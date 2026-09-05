@@ -3,7 +3,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getConfig } from '@/lib/config';
-import { getSpiderJar } from '@/lib/spiderJar';
+import { getEffectiveRequestOrigin } from '@/lib/request-protocol';
+import { getFallbackSpiderJarInfo, getSpiderJar } from '@/lib/spiderJar';
+import {
+  buildResolutionFilterFromSearchParams,
+  formatResolutionLabel,
+  serializeResolutionFilter,
+} from '@/lib/video-quality';
 
 // ================= Spider 公共可达 & 回退缓存逻辑 =================
 // 目的：避免出现 “spider url is private/not public” & 404 问题
@@ -63,6 +69,56 @@ function isPrivateHost(host: string): boolean {
     lower.startsWith('192.168.') ||
     lower === '::1'
   );
+}
+
+function getRequestBaseUrl(req: NextRequest): string {
+  const envBase = (process.env.NEXT_PUBLIC_SITE_BASE || '')
+    .trim()
+    .replace(/\/$/, '');
+  if (envBase) return envBase;
+
+  return getEffectiveRequestOrigin(req);
+}
+
+function isPublicBaseUrl(baseUrl: string): boolean {
+  try {
+    return !isPrivateHost(new URL(baseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function resolveClientRegion(req: NextRequest, searchParams: URLSearchParams) {
+  const explicit = (
+    searchParams.get('region') ||
+    searchParams.get('area') ||
+    searchParams.get('jarRegion') ||
+    ''
+  )
+    .trim()
+    .toLowerCase();
+
+  if (
+    ['intl', 'global', 'oversea', 'overseas', 'international'].includes(
+      explicit,
+    )
+  ) {
+    return 'international';
+  }
+  if (['cn', 'china', 'domestic', 'mainland'].includes(explicit)) {
+    return 'domestic';
+  }
+
+  const acceptLanguage = req.headers.get('accept-language') || '';
+  const userAgent = req.headers.get('user-agent') || '';
+
+  if (acceptLanguage.includes('zh-CN') || userAgent.includes('zh-CN')) {
+    return 'domestic';
+  }
+
+  // TVBox/影视仓客户端常常不带语言和真实地区信息。项目面向中文源，
+  // 默认国内优先比使用 Vercel/部署机房位置更符合客户端可达性。
+  return 'domestic';
 }
 
 // 旧 spider 探测与缓存逻辑已被 getSpiderJar 取代（保留候选常量供文档或 UI 展示）
@@ -130,6 +186,10 @@ export async function GET(req: NextRequest) {
     // 🎯 智能搜索代理控制（默认启用）
     const proxyParam = searchParams.get('proxy'); // off 表示禁用代理，直连原始API
     const useSmartProxy = proxyParam !== 'off' && proxyParam !== 'disable'; // 默认启用
+    const resolutionFilter =
+      buildResolutionFilterFromSearchParams(searchParams);
+    const serializedResolutionFilter =
+      serializeResolutionFilter(resolutionFilter);
 
     console.log(
       '[TVBox] request:',
@@ -142,9 +202,22 @@ export async function GET(req: NextRequest) {
       filterParam,
       'proxy:',
       useSmartProxy,
+      'minResolution:',
+      resolutionFilter.minLevel
+        ? formatResolutionLabel(resolutionFilter.minLevel)
+        : 'off',
     );
 
     const cfg = await getConfig();
+    const baseUrl = getRequestBaseUrl(req);
+    const publicBaseUrl = isPublicBaseUrl(baseUrl);
+    const jarMode = (
+      searchParams.get('jar') ||
+      searchParams.get('jarMode') ||
+      ''
+    )
+      .trim()
+      .toLowerCase();
 
     // 🛡️ 纵深防御 Layer 1: 配置接口严格过滤
     // 确定是否应该过滤成人内容
@@ -182,19 +255,17 @@ export async function GET(req: NextRequest) {
       ]);
     } catch (err) {
       console.warn('[TVBox] Spider JAR fetch timeout/failed:', err);
-      // 超时或失败时使用默认备选
-      jarInfo = {
-        success: false,
-        source: 'fallback',
-        md5: 'e53eb37c4dc3dce1c8ee0c996ca3a024',
-        buffer: null,
-        cached: false,
-      };
+      // 超时或失败时使用真实内置字节的信息，保证配置 MD5 与代理响应一致。
+      jarInfo = getFallbackSpiderJarInfo();
     }
 
     let globalSpiderJar: string;
 
-    if (jarInfo.success && jarInfo.source !== 'fallback') {
+    if (publicBaseUrl && jarMode !== 'remote' && jarMode !== 'direct') {
+      // 配置地址能被客户端访问时，优先返回同源 JAR 代理。
+      // 这避免 Vercel/服务器能下载 GitHub JAR，但电视盒子客户端下载不了的问题。
+      globalSpiderJar = `${baseUrl}/api/proxy/spider.jar?md5=${jarInfo.md5};md5;${jarInfo.md5}`;
+    } else if (jarInfo.success && jarInfo.source !== 'fallback') {
       // 成功获取远程 JAR，使用完整的 URL;md5 格式
       globalSpiderJar = `${jarInfo.source};md5;${jarInfo.md5}`;
     } else {
@@ -225,16 +296,12 @@ export async function GET(req: NextRequest) {
         ],
       };
 
-      // 智能选择备选策略（可以根据 User-Agent、地理位置等优化）
-      const userAgent = req.headers.get('user-agent') || '';
-      const acceptLanguage = req.headers.get('accept-language') || '';
-
-      let selectedStrategy: string[];
-      if (acceptLanguage.includes('zh-CN') || userAgent.includes('zh-CN')) {
-        selectedStrategy = backupStrategies.domestic;
-      } else {
-        selectedStrategy = backupStrategies.international;
-      }
+      // 客户端线路优先，而不是部署机房优先。Vercel 等海外运行时
+      // 不应该导致国内 TVBox 客户端拿到 GitHub-first 的 JAR。
+      let selectedStrategy =
+        resolveClientRegion(req, searchParams) === 'international'
+          ? backupStrategies.international
+          : backupStrategies.domestic;
 
       // 添加代理备选（总是包含）
       selectedStrategy = [...selectedStrategy, ...backupStrategies.proxy];
@@ -274,7 +341,7 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const sites = sourcesToUse.map((s) => {
+    const sourceSites = sourcesToUse.map((s) => {
       const apiType = detectApiType(s.api);
       const site: any = {
         key: s.key,
@@ -291,17 +358,19 @@ export async function GET(req: NextRequest) {
       // 🎯 默认启用智能搜索代理（解决TVBox搜索不精确问题）
       // 只代理普通采集源（type 0, 1），CSP源保持原样
       if (useSmartProxy && (apiType === 0 || apiType === 1)) {
-        const requestUrl = new URL(req.url);
-        const baseUrl = `${requestUrl.protocol}//${requestUrl.host}`;
-
         // 保存原始API供代理使用
         site.original_api = site.api;
 
+        const proxySearchParams = new URLSearchParams({
+          source: s.key,
+          filter: shouldFilterAdult ? 'on' : 'off',
+          ...serializedResolutionFilter,
+          wd: '',
+        });
+
         // 替换为智能搜索代理端点
         // TVBox会在URL后拼接搜索关键词，格式：api + wd={keyword}
-        site.api = `${baseUrl}/api/tvbox/search?source=${encodeURIComponent(
-          s.key,
-        )}&filter=${shouldFilterAdult ? 'on' : 'off'}&wd=`;
+        site.api = `${baseUrl}/api/tvbox/search?${proxySearchParams.toString()}`;
 
         console.log(`[TVBox] Enabled smart proxy for source: ${s.key}`);
       }
@@ -319,7 +388,7 @@ export async function GET(req: NextRequest) {
         };
 
         // 优化搜索参数配置
-        if (!s.api.includes('?')) {
+        if (!useSmartProxy && !s.api.includes('?')) {
           if (apiType === 1) {
             // JSON接口标准参数
             site.api = s.api + (s.api.endsWith('/') ? '' : '/') + '?ac=list';
@@ -408,6 +477,32 @@ export async function GET(req: NextRequest) {
       return site;
     });
 
+    const includeDoubanNavigation =
+      searchParams.get('douban') !== 'off' &&
+      searchParams.get('douban') !== 'false';
+    const enableDoubanKeywordSearch =
+      searchParams.get('doubanSearch') === 'on' ||
+      searchParams.get('doubanSearch') === 'true';
+    const doubanSite = {
+      key: 'decotv_douban',
+      name: '豆瓣导航',
+      type: 1,
+      api: `${baseUrl}/api/tvbox/douban`,
+      searchable: enableDoubanKeywordSearch ? 1 : 0,
+      quickSearch: enableDoubanKeywordSearch ? 1 : 0,
+      filterable: 1,
+      changeable: 0,
+      header: {
+        'User-Agent':
+          'Mozilla/5.0 (Linux; Android 11; TVBox) AppleWebKit/537.36',
+        Accept: 'application/json, text/plain, */*',
+      },
+      ext: '',
+    };
+    const sites = includeDoubanNavigation
+      ? [doubanSite, ...sourceSites]
+      : sourceSites;
+
     // 构建直播配置（同样应用成人内容过滤，仅依据显式标记）
     let livesToUse = (cfg.LiveConfig || []).filter((l) => !l.disabled);
 
@@ -441,6 +536,25 @@ export async function GET(req: NextRequest) {
       group: '直播',
     }));
 
+    const tvboxAds = [
+      'mimg.0c1q0l.cn',
+      'www.googletagmanager.com',
+      'mc.usihnbcq.cn',
+      'wan.51img1.com',
+      'iqiyi.hbuioo.com',
+      'vip.ffzyad.com',
+      'ffzyad',
+      'casino',
+      'macau',
+      'aomen',
+      'gambling',
+      'bet365',
+      '1xbet',
+      '188bet',
+      '22bet',
+      'https://lf1-cdn-tos.bytegoofy.com/obj/tos-cn-i-dy/455ccf9e8ae744378118e4bd289288dd',
+    ];
+
     // 构建配置对象（支持多种模式优化）
     let tvboxConfig: any;
     if (mode === 'yingshicang') {
@@ -473,9 +587,11 @@ export async function GET(req: NextRequest) {
             };
           }
 
-          // 强制启用所有搜索功能，提升切换体验
-          optimizedSite.searchable = 1;
-          optimizedSite.quickSearch = 1;
+          // 强制启用普通源搜索功能，豆瓣导航默认只做分类导航。
+          optimizedSite.searchable =
+            optimizedSite.key === 'decotv_douban' ? doubanSite.searchable : 1;
+          optimizedSite.quickSearch =
+            optimizedSite.key === 'decotv_douban' ? doubanSite.quickSearch : 1;
           optimizedSite.filterable = 1;
 
           // 影视仓特有优化
@@ -530,6 +646,7 @@ export async function GET(req: NextRequest) {
           'bilibili',
           'renrenmi',
         ],
+        ads: tvboxAds,
         // 影视仓专用规则 - 解决播放问题
         rules: [
           {
@@ -574,9 +691,11 @@ export async function GET(req: NextRequest) {
             };
           }
 
-          // 强制启用快速切换相关功能
-          fastSite.searchable = 1;
-          fastSite.quickSearch = 1;
+          // 强制启用普通源快速切换相关功能，豆瓣导航默认不参与关键词搜索。
+          fastSite.searchable =
+            fastSite.key === 'decotv_douban' ? doubanSite.searchable : 1;
+          fastSite.quickSearch =
+            fastSite.key === 'decotv_douban' ? doubanSite.quickSearch : 1;
           fastSite.filterable = 1;
           fastSite.changeable = 1;
 
@@ -593,6 +712,7 @@ export async function GET(req: NextRequest) {
           { name: 'Json并发', type: 2, url: 'Parallel' },
         ],
         flags: ['youku', 'qq', 'iqiyi', 'qiyi', 'letv', 'sohu', 'mgtv'],
+        ads: tvboxAds,
         wallpaper: '', // 移除壁纸加快加载
         maxHomeVideoContent: '15', // 减少首页内容，提升加载速度
       };
@@ -606,6 +726,7 @@ export async function GET(req: NextRequest) {
           { name: '默认解析', type: 0, url: 'https://jx.xmflv.com/?url=' },
           { name: '夜幕解析', type: 0, url: 'https://www.yemu.xyz/?url=' },
         ],
+        ads: tvboxAds,
       };
     } else {
       // 标准完整配置 - 优化体验和兼容性
@@ -732,15 +853,7 @@ export async function GET(req: NextRequest) {
             ],
           },
         ],
-        ads: [
-          'mimg.0c1q0l.cn',
-          'www.googletagmanager.com',
-          'mc.usihnbcq.cn',
-          'wan.51img1.com',
-          'iqiyi.hbuioo.com',
-          'vip.ffzyad.com',
-          'https://lf1-cdn-tos.bytegoofy.com/obj/tos-cn-i-dy/455ccf9e8ae744378118e4bd289288dd',
-        ],
+        ads: tvboxAds,
         doh: [
           {
             name: '阿里DNS',
@@ -774,6 +887,17 @@ export async function GET(req: NextRequest) {
     tvboxConfig.spider_real_size = jarInfo.size;
     tvboxConfig.spider_tried = jarInfo.tried;
     tvboxConfig.spider_success = jarInfo.success;
+    tvboxConfig.min_resolution = resolutionFilter.minLevel
+      ? formatResolutionLabel(resolutionFilter.minLevel)
+      : 'off';
+    tvboxConfig.resolution_strict = resolutionFilter.strict;
+    tvboxConfig.jar_mode =
+      publicBaseUrl && jarMode !== 'remote' && jarMode !== 'direct'
+        ? 'same-origin-proxy'
+        : 'remote';
+    tvboxConfig.client_region = resolveClientRegion(req, searchParams);
+    tvboxConfig.douban_navigation = includeDoubanNavigation;
+    tvboxConfig.douban_keyword_search = enableDoubanKeywordSearch;
 
     // 提供备用字段：仅用于调试，不影响体检
     (tvboxConfig as any).spider_backup =

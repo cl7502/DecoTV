@@ -3,40 +3,93 @@ import { NextRequest } from 'next/server';
 import { AdminConfig } from '@/lib/admin.types';
 import { getConfig } from '@/lib/config';
 import { signM3U8ProxyRequest } from '@/lib/m3u8-proxy';
+import { getEffectiveRequestOrigin } from '@/lib/request-protocol';
 import { SearchResult } from '@/lib/types';
 
-/**
- * 解析广告过滤是否启用：admin 后台开关 > 环境变量 > 默认开。
- * admin 后台未配置时回落到 ENABLE_AD_FILTER；都没配置时默认 true。
- */
-function isAdFilterEnabled(adminConfig: AdminConfig | null): boolean {
+// Browser playback defaults to the filter proxy so upstream ad segments can be
+// removed. Native TV clients stay direct unless explicitly opted in below.
+function parseBooleanFlag(value: string | undefined): boolean | null {
+  if (value === undefined) return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true' || normalized === '1' || normalized === 'on') {
+    return true;
+  }
+  if (normalized === 'false' || normalized === '0' || normalized === 'off') {
+    return false;
+  }
+  return null;
+}
+
+function getQueryProxyMode(request: NextRequest): boolean | null {
+  const value = request.nextUrl.searchParams.get('adfilter');
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
+  if (['server', 'proxy', 'true', '1', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['direct', 'false', '0', 'off'].includes(normalized)) {
+    return false;
+  }
+  return null;
+}
+
+function isNativeTvClient(request: NextRequest): boolean {
+  const headers = request.headers as Headers | undefined;
+  const searchParams = request.nextUrl?.searchParams;
+  const ua = (headers?.get('user-agent') || '').toLowerCase();
+  const client = (searchParams?.get('client') || '').toLowerCase();
+
+  return (
+    client === 'orion' ||
+    client === 'oriontv' ||
+    ua.includes('orion') ||
+    ua.includes('reactnative') ||
+    ua.includes('expo') ||
+    ua.includes('okhttp')
+  );
+}
+
+export function shouldUseServerSideEpisodeProxy(
+  adminConfig: AdminConfig | null,
+  request: NextRequest,
+): boolean {
+  const queryMode = getQueryProxyMode(request);
+  if (queryMode !== null) return queryMode;
+
+  // Native TV players are more sensitive to rewritten HLS playlists. Keep their
+  // default playback URL direct so seeking uses the upstream timeline.
+  if (isNativeTvClient(request)) return false;
+
+  const explicitProxyFlag =
+    parseBooleanFlag(process.env.M3U8_SERVER_PROXY) ??
+    parseBooleanFlag(process.env.ENABLE_M3U8_SERVER_PROXY);
+  if (explicitProxyFlag !== null) return explicitProxyFlag;
+
+  const legacyAdFilterFlag = parseBooleanFlag(process.env.ENABLE_AD_FILTER);
+  if (legacyAdFilterFlag !== null) return legacyAdFilterFlag;
+
   const adminFlag = adminConfig?.AdFilterConfig?.enabled;
   if (typeof adminFlag === 'boolean') return adminFlag;
-  const envFlag = process.env.ENABLE_AD_FILTER;
-  if (envFlag === undefined) return true;
-  return envFlag === 'true' || envFlag === '1';
+
+  return true;
 }
 
-function adFilterDisabledByQuery(request: NextRequest): boolean {
-  const v = request.nextUrl.searchParams.get('adfilter');
-  return v === 'false' || v === '0';
-}
-
-function buildFilterProxyUrl(
+export function buildFilterProxyUrl(
   request: NextRequest,
   upstreamUrl: string,
+  referer?: string,
 ): string {
-  const signature = signM3U8ProxyRequest(upstreamUrl);
+  const signature = signM3U8ProxyRequest(upstreamUrl, referer);
   if (!signature) return upstreamUrl;
 
-  const host = request.headers.get('host');
-  const protocol =
-    request.headers.get('x-forwarded-proto') ||
-    request.nextUrl.protocol.replace(':', '') ||
-    'http';
-  return `${protocol}://${host}/api/proxy/m3u8-filter?url=${encodeURIComponent(
-    upstreamUrl,
-  )}&sig=${encodeURIComponent(signature)}`;
+  const proxyUrl = new URL(
+    '/api/proxy/m3u8-filter',
+    getEffectiveRequestOrigin(request),
+  );
+  proxyUrl.searchParams.set('url', upstreamUrl);
+  if (referer) proxyUrl.searchParams.set('referer', referer);
+  proxyUrl.searchParams.set('sig', signature);
+  return proxyUrl.toString();
 }
 
 function shouldRewriteEpisode(url: string): boolean {
@@ -46,7 +99,7 @@ function shouldRewriteEpisode(url: string): boolean {
   return true;
 }
 
-function isSourceDisabled(
+export function isSourceAdFilterDisabled(
   adminConfig: AdminConfig | null,
   sourceKey: string | undefined,
 ): boolean {
@@ -71,10 +124,9 @@ export async function rewriteEpisodesForAdFilter<
 >(result: T, request: NextRequest): Promise<T> {
   if (!result) return result;
   const adminConfig = await safeGetConfig();
-  if (!isAdFilterEnabled(adminConfig) || adFilterDisabledByQuery(request))
-    return result;
+  if (!shouldUseServerSideEpisodeProxy(adminConfig, request)) return result;
   if (result.source === 'private_library') return result;
-  if (isSourceDisabled(adminConfig, result.source)) return result;
+  if (isSourceAdFilterDisabled(adminConfig, result.source)) return result;
   if (!Array.isArray(result.episodes) || result.episodes.length === 0)
     return result;
 
@@ -90,12 +142,11 @@ export async function rewriteEpisodesForAdFilterMany(
   request: NextRequest,
 ): Promise<SearchResult[]> {
   const adminConfig = await safeGetConfig();
-  if (!isAdFilterEnabled(adminConfig) || adFilterDisabledByQuery(request))
-    return results;
+  if (!shouldUseServerSideEpisodeProxy(adminConfig, request)) return results;
 
   // 对每条结果按"源是否豁免"独立判断
   return results.map((r) => {
-    if (isSourceDisabled(adminConfig, r.source)) return r;
+    if (isSourceAdFilterDisabled(adminConfig, r.source)) return r;
     if (r.source === 'private_library') return r;
     if (!Array.isArray(r.episodes) || r.episodes.length === 0) return r;
     const rewritten = r.episodes.map((ep) =>

@@ -34,7 +34,7 @@ define(['./workbox-e9849328'], function (e) {
     e.clientsClaim(),
     e.precacheAndRoute(
       [
-        { url: '/VERSION.txt', revision: '48f16f5f67fb054902be16b484801d35' },
+        { url: '/VERSION.txt', revision: 'f611a833e555d7e8cdb2e6fb752fc60e' },
         {
           url: '/_next/app-build-manifest.json',
           revision: '0713622515fce8b7f89150829ae64fbb',

@@ -22,6 +22,15 @@ export type PrivateLibraryConnectorType =
   | 'jellyfin'
   | 'xiaoya';
 
+export interface PrivateLibraryEpisodeItem {
+  sourceItemId: string;
+  title: string;
+  streamPath: string;
+  season?: number;
+  episode?: number;
+  embeddedStreamUrl?: string;
+}
+
 export interface PrivateLibraryItem {
   id: string;
   connectorId: string;
@@ -33,6 +42,7 @@ export interface PrivateLibraryItem {
   tmdbId?: number;
   mediaType: 'movie' | 'tv';
   streamPath: string;
+  seriesId?: string;
   season?: number;
   episode?: number;
   overview?: string;
@@ -49,6 +59,7 @@ export interface PrivateLibraryItem {
   scannedAt: number;
   sortKey: number;
   embeddedStreamUrl?: string;
+  episodeItems?: PrivateLibraryEpisodeItem[];
 }
 
 export interface PrivateLibraryProgressPayload {
@@ -206,7 +217,7 @@ const PRIVATE_LIBRARY_CLIENT_DEVICE = 'DecoTV Web';
 const PRIVATE_LIBRARY_CLIENT_VERSION = '1.0.0';
 const XIAOYA_MAX_SCAN_DEPTH = 8;
 const MEDIA_FILE_REGEX = /\.(mkv|mp4|m3u8|mov|avi|flv|ts|strm)$/i;
-const OPENLIST_MEDIA_FILE_REGEX = /\.(mkv|mp4|m3u8|mov|avi|flv|ts)$/i;
+const OPENLIST_MEDIA_FILE_REGEX = MEDIA_FILE_REGEX;
 
 function sanitizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -322,6 +333,21 @@ function joinPath(basePath: string, name: string): string {
   return `${base}/${cleanName}`;
 }
 
+function buildAlistDownloadUrl(
+  connector: PrivateLibraryConnector,
+  path: string,
+): string {
+  const baseUrl = connector.serverUrl.replace(/\/+$/, '');
+  const encodedPath = normalizePath(path)
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+
+  return `${baseUrl}/d${
+    encodedPath.startsWith('/') ? encodedPath : `/${encodedPath}`
+  }`;
+}
+
 function getPathName(path: string): string {
   const normalized = normalizePath(path);
   const parts = normalized.split('/').filter(Boolean);
@@ -333,6 +359,35 @@ function stripMediaExtension(name: string): string {
     /\.(mkv|mp4|m3u8|mov|avi|flv|ts|strm)$/i,
     '',
   );
+}
+
+function isStrmFile(name: string): boolean {
+  return /\.strm$/i.test(name);
+}
+
+function isTvLibraryContext(value?: string): boolean {
+  const normalized = sanitizeString(value).toLowerCase();
+  if (!normalized) return false;
+
+  return /剧|剧集|电视剧|综艺|番剧|动漫|动画|season|series|show|tv/.test(
+    normalized,
+  );
+}
+
+function formatEpisodeTitle(
+  fileName: string,
+  season?: number,
+  episode?: number,
+  fallbackIndex?: number,
+): string {
+  const rawTitle = stripMediaExtension(fileName);
+  if (season && episode) {
+    return `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+  }
+  if (episode) {
+    return `第${episode}集`;
+  }
+  return rawTitle || `第${(fallbackIndex || 0) + 1}集`;
 }
 
 function parseTmdbId(input: string): number | undefined {
@@ -379,14 +434,28 @@ function parseEpisodeInfo(pathOrName: string): {
   season?: number;
   episode?: number;
 } {
-  const match = pathOrName.match(/S(\d{1,2})E(\d{1,2})/i);
-  if (!match) {
+  const seasonEpisodeMatch = pathOrName.match(/S(\d{1,2})E(\d{1,4})/i);
+  if (seasonEpisodeMatch) {
+    return {
+      season: Number(seasonEpisodeMatch[1]),
+      episode: Number(seasonEpisodeMatch[2]),
+    };
+  }
+
+  const seasonMatch =
+    pathOrName.match(/(?:season|第)\s*(\d{1,2})\s*(?:季)?/i) ||
+    pathOrName.match(/\/S(\d{1,2})(?:\/|$)/i);
+  const episodeMatch =
+    pathOrName.match(/第\s*(\d{1,4})\s*[集期话話]/) ||
+    pathOrName.match(/(?:^|[\s._-])(?:ep?|episode)\s*\.?\s*(\d{1,4})(?=\D|$)/i);
+
+  if (!seasonMatch && !episodeMatch) {
     return {};
   }
 
   return {
-    season: Number(match[1]),
-    episode: Number(match[2]),
+    season: seasonMatch ? Number(seasonMatch[1]) : undefined,
+    episode: episodeMatch ? Number(episodeMatch[1]) : undefined,
   };
 }
 
@@ -799,6 +868,29 @@ async function resolveMediaServerAuth(
   return session;
 }
 
+async function withMediaServerAuthRetry<T>(
+  connector: PrivateLibraryConnector,
+  operation: (auth: MediaServerAuthSession) => Promise<T>,
+): Promise<T> {
+  const auth = await resolveMediaServerAuth(connector);
+  try {
+    return await operation(auth);
+  } catch (error) {
+    if (
+      !(error instanceof PrivateLibraryError) ||
+      error.code !== 'unauthorized' ||
+      !hasCredentialPair(connector.username, connector.password)
+    ) {
+      throw error;
+    }
+
+    const refreshedAuth = await resolveMediaServerAuth(connector, {
+      forceRefresh: true,
+    });
+    return operation(refreshedAuth);
+  }
+}
+
 function getAlistServiceName(type: PrivateLibraryConnectorType): string {
   return type === 'xiaoya' ? '小雅 Alist' : 'OpenList';
 }
@@ -914,10 +1006,11 @@ function extractFirstHttpUrl(value: unknown): string {
   return '';
 }
 
-async function readXiaoyaStrmTargetUrl(
+async function readAlistStrmTargetUrl(
   connector: PrivateLibraryConnector,
   path: string,
 ): Promise<string> {
+  const serviceName = getAlistServiceName(connector.type);
   const fileInfo = await getAlistFileInfo(connector, path);
   const inlineContent = sanitizeString(fileInfo?.content);
   if (inlineContent) {
@@ -925,21 +1018,35 @@ async function readXiaoyaStrmTargetUrl(
   }
 
   const rawUrl = sanitizeString(fileInfo?.raw_url);
-  if (!rawUrl) {
-    return '';
+  if (rawUrl) {
+    try {
+      const text = await fetchTextWithTimeout(
+        rawUrl,
+        {
+          method: 'GET',
+          headers: {
+            Accept: 'text/plain,*/*',
+          },
+        },
+        PRIVATE_LIBRARY_CONTROL_TIMEOUT_MS,
+        serviceName,
+      );
+      const url = extractFirstHttpUrl(text);
+      if (url) return url;
+    } catch {
+      // fall through to the authenticated download endpoint
+    }
   }
 
   try {
     const text = await fetchTextWithTimeout(
-      rawUrl,
+      buildAlistDownloadUrl(connector, path),
       {
         method: 'GET',
-        headers: {
-          Accept: 'text/plain,*/*',
-        },
+        headers: await buildAlistHeaders(connector),
       },
       PRIVATE_LIBRARY_CONTROL_TIMEOUT_MS,
-      '小雅 Alist',
+      serviceName,
     );
     return extractFirstHttpUrl(text);
   } catch {
@@ -1211,20 +1318,32 @@ async function scanOpenList(
     const mediaFiles = children.filter(
       (entry) => !entry.is_dir && OPENLIST_MEDIA_FILE_REGEX.test(entry.name),
     );
+    const isSeriesDirectory =
+      mediaFiles.length > 1 ||
+      isTvLibraryContext(dir.name) ||
+      isTvLibraryContext(rootPath);
 
     for (const media of mediaFiles) {
       const mediaPath =
         sanitizeString(media.path) || joinPath(dirPath, media.name);
       const { season, episode } = parseEpisodeInfo(`${dirPath}/${media.name}`);
-      const mediaType: 'movie' | 'tv' = season || episode ? 'tv' : 'movie';
+      const mediaType: 'movie' | 'tv' =
+        season || episode || isSeriesDirectory ? 'tv' : 'movie';
       const sourceItemId = `${dirPath}::${mediaPath}`;
+      const embeddedStreamUrl = isStrmFile(media.name)
+        ? await readAlistStrmTargetUrl(connector, mediaPath).catch(() => '')
+        : '';
+
+      if (isStrmFile(media.name) && !embeddedStreamUrl) {
+        continue;
+      }
 
       items.push({
         id: `${connector.id}:${Buffer.from(sourceItemId).toString('base64url')}`,
         connectorId: connector.id,
         connectorType: connector.type,
         sourceItemId,
-        title: season || episode ? stripMediaExtension(media.name) : title,
+        title,
         searchTitle: title,
         year,
         tmdbId,
@@ -1234,6 +1353,7 @@ async function scanOpenList(
         episode,
         scannedAt,
         sortKey: items.length,
+        embeddedStreamUrl,
       });
     }
   }
@@ -1346,16 +1466,21 @@ async function scanXiaoyaDirectory(
     const mediaType: 'movie' | 'tv' =
       season || episode
         ? 'tv'
-        : nextContext.libraryName?.includes('剧')
+        : isTvLibraryContext(nextContext.libraryName) ||
+            isTvLibraryContext(nextContext.title)
           ? 'tv'
           : 'movie';
     const title =
       mediaType === 'tv' && (season || episode)
         ? stripMediaExtension(entry.name)
         : nextContext.title || stripMediaExtension(entry.name);
-    const embeddedStreamUrl = /\.strm$/i.test(entry.name)
-      ? await readXiaoyaStrmTargetUrl(connector, entryPath).catch(() => '')
+    const embeddedStreamUrl = isStrmFile(entry.name)
+      ? await readAlistStrmTargetUrl(connector, entryPath).catch(() => '')
       : '';
+
+    if (isStrmFile(entry.name) && !embeddedStreamUrl) {
+      continue;
+    }
 
     items.push({
       id: `${connector.id}:${Buffer.from(entryPath).toString('base64url')}`,
@@ -1400,17 +1525,8 @@ async function scanXiaoya(
 async function scanEmbyLike(
   connector: PrivateLibraryConnector,
 ): Promise<PrivateLibraryItem[]> {
-  const auth = await resolveMediaServerAuth(connector);
-  const libraryFilter = new Set(
-    sanitizeStringArray(connector.libraryFilter).map((item) =>
-      item.toLowerCase(),
-    ),
-  );
-  const authQuery = auth.accessToken
-    ? `api_key=${encodeURIComponent(auth.accessToken)}`
-    : '';
-  const payload = await fetchJsonWithTimeout<{
-    Items?: Array<{
+  return withMediaServerAuthRetry(connector, async (auth) => {
+    type LibraryItem = {
       Id: string;
       Name: string;
       Type: string;
@@ -1419,55 +1535,220 @@ async function scanEmbyLike(
       ProviderIds?: { Tmdb?: string };
       Overview?: string;
       Genres?: string[];
-    }>;
-  }>(
-    `${connector.serverUrl}/Items?Recursive=true&IncludeItemTypes=Movie,Series&Fields=ProviderIds,ProductionYear,CollectionType,Overview,Genres&${authQuery}`,
-    {
-      headers: buildMediaServerHeaders(connector, auth),
-    },
-    PRIVATE_LIBRARY_SCAN_TIMEOUT_MS,
-    connector.type === 'emby' ? 'Emby' : 'Jellyfin',
-  );
+    };
+    type EpisodeItem = LibraryItem & {
+      SeriesId?: string;
+      SeriesName?: string;
+      ParentIndexNumber?: number;
+      IndexNumber?: number;
+    };
 
-  const scannedAt = Date.now();
-  const items: PrivateLibraryItem[] = [];
-  for (const item of payload.Items || []) {
-    if (!item?.Id || !item?.Name) {
+    const serviceName = connector.type === 'emby' ? 'Emby' : 'Jellyfin';
+    const buildItemsUrl = (includeItemTypes: string, fields: string) => {
+      const params = new URLSearchParams({
+        Recursive: 'true',
+        IncludeItemTypes: includeItemTypes,
+        Fields: fields,
+      });
+      if (auth.accessToken) params.set('api_key', auth.accessToken);
+      if (auth.userId) params.set('UserId', auth.userId);
+      return `${connector.serverUrl}/Items?${params.toString()}`;
+    };
+    const requestItems = async <T extends LibraryItem>(
+      includeItemTypes: string,
+      fields: string,
+    ) =>
+      fetchJsonWithTimeout<{ Items?: T[] }>(
+        buildItemsUrl(includeItemTypes, fields),
+        { headers: buildMediaServerHeaders(connector, auth) },
+        PRIVATE_LIBRARY_SCAN_TIMEOUT_MS,
+        serviceName,
+      );
+
+    const libraryFilter = new Set(
+      sanitizeStringArray(connector.libraryFilter).map((item) =>
+        item.toLowerCase(),
+      ),
+    );
+    const libraryPayload = await requestItems<LibraryItem>(
+      'Movie,Series',
+      'ProviderIds,ProductionYear,CollectionType,Overview,Genres',
+    );
+    const scannedAt = Date.now();
+    const items: PrivateLibraryItem[] = [];
+    const seriesById = new Map<string, LibraryItem>();
+    const seriesByName = new Map<string, LibraryItem>();
+
+    for (const item of libraryPayload.Items || []) {
+      if (!item?.Id || !item?.Name) continue;
+      if (
+        libraryFilter.size > 0 &&
+        !libraryFilter.has(sanitizeString(item.CollectionType).toLowerCase())
+      ) {
+        continue;
+      }
+
+      if (item.Type === 'Series') {
+        seriesById.set(item.Id, item);
+        seriesByName.set(normalizeLookupTitle(item.Name), item);
+        continue;
+      }
+
+      const tmdbId = Number(item.ProviderIds?.Tmdb);
+      items.push({
+        id: `${connector.id}:${item.Id}`,
+        connectorId: connector.id,
+        connectorType: connector.type,
+        sourceItemId: item.Id,
+        title: item.Name,
+        searchTitle: item.Name,
+        year: item.ProductionYear,
+        tmdbId: Number.isFinite(tmdbId) ? tmdbId : undefined,
+        mediaType: 'movie',
+        streamPath: item.Id,
+        overview: sanitizeString(item.Overview),
+        genres: sanitizeStringArray(item.Genres),
+        libraryName: sanitizeString(item.CollectionType),
+        poster: buildPrivateLibraryPosterUrl(connector.id, item.Id),
+        scannedAt,
+        sortKey: items.length,
+      });
+    }
+
+    if (seriesById.size === 0) return items;
+
+    const episodePayload = await requestItems<EpisodeItem>(
+      'Episode',
+      'ProviderIds,ProductionYear,Overview,Genres',
+    );
+    for (const episode of episodePayload.Items || []) {
+      if (!episode?.Id) continue;
+      const series =
+        seriesById.get(sanitizeString(episode.SeriesId)) ||
+        seriesByName.get(normalizeLookupTitle(episode.SeriesName || ''));
+      if (!series) continue;
+
+      const tmdbId = Number(series.ProviderIds?.Tmdb);
+      const season = Number(episode.ParentIndexNumber);
+      const episodeNumber = Number(episode.IndexNumber);
+      items.push({
+        id: `${connector.id}:${episode.Id}`,
+        connectorId: connector.id,
+        connectorType: connector.type,
+        sourceItemId: episode.Id,
+        seriesId: series.Id,
+        title: series.Name,
+        searchTitle: series.Name,
+        year: series.ProductionYear || episode.ProductionYear,
+        tmdbId: Number.isFinite(tmdbId) ? tmdbId : undefined,
+        mediaType: 'tv',
+        streamPath: episode.Id,
+        season: Number.isFinite(season) ? season : undefined,
+        episode: Number.isFinite(episodeNumber) ? episodeNumber : undefined,
+        overview: sanitizeString(series.Overview || episode.Overview),
+        genres: sanitizeStringArray(series.Genres || episode.Genres),
+        libraryName: sanitizeString(series.CollectionType),
+        poster: buildPrivateLibraryPosterUrl(connector.id, series.Id),
+        scannedAt,
+        sortKey: items.length,
+      });
+    }
+
+    return items;
+  });
+}
+
+function comparePrivateEpisodes(
+  left: PrivateLibraryItem,
+  right: PrivateLibraryItem,
+): number {
+  const seasonDelta = (left.season || 0) - (right.season || 0);
+  if (seasonDelta !== 0) return seasonDelta;
+
+  const episodeDelta = (left.episode || 0) - (right.episode || 0);
+  if (episodeDelta !== 0) return episodeDelta;
+
+  return left.sortKey - right.sortKey;
+}
+
+function getPrivateLibrarySeriesKey(item: PrivateLibraryItem): string {
+  const title = normalizeLookupTitle(item.searchTitle || item.title);
+  return [
+    item.connectorId,
+    item.seriesId
+      ? `series:${item.seriesId}`
+      : item.tmdbId
+        ? `tmdb:${item.tmdbId}`
+        : `title:${title}`,
+    item.year || 'unknown',
+    sanitizeString(item.libraryName).toLowerCase(),
+  ].join(':');
+}
+
+export function aggregatePrivateLibraryItems(
+  items: PrivateLibraryItem[],
+): PrivateLibraryItem[] {
+  const grouped = new Map<string, PrivateLibraryItem[]>();
+  const passthrough: PrivateLibraryItem[] = [];
+
+  for (const item of items) {
+    if (item.mediaType !== 'tv') {
+      passthrough.push(item);
       continue;
     }
 
-    if (
-      libraryFilter.size > 0 &&
-      !libraryFilter.has(sanitizeString(item.CollectionType).toLowerCase())
-    ) {
+    const key = getPrivateLibrarySeriesKey(item);
+    const list = grouped.get(key) || [];
+    list.push(item);
+    grouped.set(key, list);
+  }
+
+  for (const [key, group] of grouped.entries()) {
+    if (group.length === 1) {
+      passthrough.push(group[0]);
       continue;
     }
 
-    const mediaType: 'movie' | 'tv' = item.Type === 'Series' ? 'tv' : 'movie';
-    const tmdbIdRaw = item.ProviderIds?.Tmdb;
-    const tmdbId = tmdbIdRaw ? Number(tmdbIdRaw) : undefined;
+    const sorted = [...group].sort(comparePrivateEpisodes);
+    const base = sorted[0];
+    const episodeItems: PrivateLibraryEpisodeItem[] = sorted.map(
+      (item, index) => ({
+        sourceItemId: item.sourceItemId,
+        title: formatEpisodeTitle(
+          getPathName(item.streamPath) || item.title,
+          item.season,
+          item.episode,
+          index,
+        ),
+        streamPath: item.streamPath,
+        season: item.season,
+        episode: item.episode,
+        embeddedStreamUrl: item.embeddedStreamUrl,
+      }),
+    );
+    const seasons = new Set(
+      sorted
+        .map((item) => item.season)
+        .filter((season): season is number => Boolean(season)),
+    );
 
-    items.push({
-      id: `${connector.id}:${item.Id}`,
-      connectorId: connector.id,
-      connectorType: connector.type,
-      sourceItemId: item.Id,
-      title: item.Name,
-      searchTitle: item.Name,
-      year: item.ProductionYear,
-      tmdbId: Number.isFinite(tmdbId || NaN) ? tmdbId : undefined,
-      mediaType,
-      streamPath: item.Id,
-      overview: sanitizeString(item.Overview),
-      genres: sanitizeStringArray(item.Genres),
-      libraryName: sanitizeString(item.CollectionType),
-      poster: buildPrivateLibraryPosterUrl(connector.id, item.Id),
-      scannedAt,
-      sortKey: items.length,
+    passthrough.push({
+      ...base,
+      id: `${base.connectorId}:${Buffer.from(`series:${key}`).toString('base64url')}`,
+      title: base.searchTitle || base.title,
+      season: undefined,
+      episode: undefined,
+      sourceItemId: episodeItems[0].sourceItemId,
+      streamPath: episodeItems[0].streamPath,
+      embeddedStreamUrl: episodeItems[0].embeddedStreamUrl,
+      episodeCount: episodeItems.length,
+      seasonCount: seasons.size > 0 ? seasons.size : base.seasonCount,
+      sortKey: Math.min(...sorted.map((item) => item.sortKey)),
+      episodeItems,
     });
   }
 
-  return items;
+  return passthrough.sort((left, right) => left.sortKey - right.sortKey);
 }
 
 function getConnectorCacheKey(connectorId: string): string {
@@ -1538,6 +1819,7 @@ export async function scanConnector(
     items = await scanEmbyLike(connector);
   }
 
+  items = aggregatePrivateLibraryItems(items);
   setServerCache(getConnectorCacheKey(connector.id), items, 3600);
   return items;
 }
@@ -1579,19 +1861,19 @@ export async function testConnector(
       return { ok: true };
     }
 
-    const auth = await resolveMediaServerAuth(connector);
-    const authQuery = auth.accessToken
-      ? `api_key=${encodeURIComponent(auth.accessToken)}`
-      : '';
-
-    await fetchJsonWithTimeout<{ Items?: unknown[] }>(
-      `${connector.serverUrl}/Items?Limit=1&Recursive=false&${authQuery}`,
-      {
-        headers: buildMediaServerHeaders(connector, auth),
-      },
-      PRIVATE_LIBRARY_CONTROL_TIMEOUT_MS,
-      connector.type === 'emby' ? 'Emby' : 'Jellyfin',
-    );
+    await withMediaServerAuthRetry(connector, async (auth) => {
+      const authQuery = auth.accessToken
+        ? `api_key=${encodeURIComponent(auth.accessToken)}`
+        : '';
+      await fetchJsonWithTimeout<{ Items?: unknown[] }>(
+        `${connector.serverUrl}/Items?Limit=1&Recursive=false&${authQuery}`,
+        {
+          headers: buildMediaServerHeaders(connector, auth),
+        },
+        PRIVATE_LIBRARY_CONTROL_TIMEOUT_MS,
+        connector.type === 'emby' ? 'Emby' : 'Jellyfin',
+      );
+    });
 
     return { ok: true };
   } catch (error) {
@@ -1712,11 +1994,8 @@ export async function resolvePrivateLibraryAudioStreams(
     return [];
   }
 
-  const auth = await resolveMediaServerAuth(connector);
-  const mediaStreams = await fetchPlaybackInfoMediaStreams(
-    connector,
-    auth,
-    sourceItemId,
+  const mediaStreams = await withMediaServerAuthRetry(connector, (auth) =>
+    fetchPlaybackInfoMediaStreams(connector, auth, sourceItemId),
   );
 
   return mediaStreams
@@ -1739,14 +2018,36 @@ export async function resolvePrivateLibraryAudioStreams(
     .sort((left, right) => left.index - right.index);
 }
 
+function findCachedAlistItem(
+  connectorId: string,
+  sourceItemId: string,
+): {
+  item?: PrivateLibraryItem;
+  episode?: PrivateLibraryEpisodeItem;
+} {
+  const cachedItems = getConnectorCachedItems(connectorId);
+
+  for (const item of cachedItems) {
+    if (item.sourceItemId === sourceItemId) {
+      return { item };
+    }
+
+    const episode = item.episodeItems?.find(
+      (entry) => entry.sourceItemId === sourceItemId,
+    );
+    if (episode) {
+      return { item, episode };
+    }
+  }
+
+  return {};
+}
+
 async function resolveXiaoyaPlaybackUrl(
   connector: PrivateLibraryConnector,
   sourceItemId: string,
 ): Promise<string> {
-  const cachedItems = getConnectorCachedItems(connector.id);
-  const cachedItem = cachedItems.find(
-    (item) => item.sourceItemId === sourceItemId,
-  );
+  const cached = findCachedAlistItem(connector.id, sourceItemId);
   const fileInfo = await getAlistFileInfo(connector, sourceItemId).catch(
     () => undefined,
   );
@@ -1757,7 +2058,8 @@ async function resolveXiaoyaPlaybackUrl(
     await callXiaoyaFsOther(connector, sourceItemId, 'down_url').catch(
       () => '',
     ),
-    sanitizeString(cachedItem?.embeddedStreamUrl),
+    sanitizeString(cached.episode?.embeddedStreamUrl),
+    sanitizeString(cached.item?.embeddedStreamUrl),
     sanitizeString(fileInfo?.raw_url),
   ];
 
@@ -1776,7 +2078,12 @@ export async function resolveStreamRequest(
   connectorId: string,
   sourceItemId: string,
   audioStreamIndex?: number,
-): Promise<{ url: string; headers?: Record<string, string> } | null> {
+  options: { forceRefreshAuth?: boolean } = {},
+): Promise<{
+  url: string;
+  headers?: Record<string, string>;
+  canRefreshAuth?: boolean;
+} | null> {
   const cfg = await getPrivateLibraryConfig();
   const connector = cfg.connectors.find(
     (item) => item.id === connectorId && item.enabled,
@@ -1786,14 +2093,18 @@ export async function resolveStreamRequest(
   }
 
   if (connector.type === 'openlist') {
+    const cached = findCachedAlistItem(connector.id, sourceItemId);
+    const embeddedStreamUrl =
+      sanitizeString(cached.episode?.embeddedStreamUrl) ||
+      sanitizeString(cached.item?.embeddedStreamUrl);
+    if (embeddedStreamUrl) {
+      return { url: embeddedStreamUrl };
+    }
+
     const targetPath = sourceItemId.split('::')[1] || sourceItemId;
-    const encodedPath = targetPath
-      .split('/')
-      .map((segment) => encodeURIComponent(segment))
-      .join('/');
 
     return {
-      url: `${connector.serverUrl}/d${encodedPath.startsWith('/') ? encodedPath : `/${encodedPath}`}`,
+      url: buildAlistDownloadUrl(connector, targetPath),
       headers: await buildAlistHeaders(connector),
     };
   }
@@ -1804,7 +2115,9 @@ export async function resolveStreamRequest(
     };
   }
 
-  const auth = await resolveMediaServerAuth(connector);
+  const auth = await resolveMediaServerAuth(connector, {
+    forceRefresh: options.forceRefreshAuth,
+  });
   const query = new URLSearchParams();
   query.set('static', 'true');
   if (auth.accessToken) {
@@ -1818,6 +2131,7 @@ export async function resolveStreamRequest(
   return {
     url: `${connector.serverUrl}/Videos/${encodeURIComponent(sourceItemId)}/stream?${query.toString()}`,
     headers: buildMediaServerHeaders(connector, auth),
+    canRefreshAuth: hasCredentialPair(connector.username, connector.password),
   };
 }
 

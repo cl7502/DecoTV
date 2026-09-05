@@ -2,7 +2,11 @@
 
 import { NextResponse } from 'next/server';
 
-import { DEFAULT_AD_FILTER_CONFIG, filterM3U8 } from '@/lib/ad-filter';
+import {
+  DEFAULT_AD_FILTER_CONFIG,
+  filterM3U8,
+  shouldBypassFilteredPlaylist,
+} from '@/lib/ad-filter';
 import { getConfig } from '@/lib/config';
 import { getBaseUrl, resolveUrl } from '@/lib/live';
 import {
@@ -14,16 +18,22 @@ import {
   normalizeHeaderUrl,
   validateProxyTargetUrl,
 } from '@/lib/proxy-security';
+import { getEffectiveRequestOrigin } from '@/lib/request-protocol';
 
 export const runtime = 'edge';
 
 const DEFAULT_UA =
   'Mozilla/5.0 (Linux; Android 10; AndroidTV) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const DESKTOP_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+  '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
 const FETCH_TIMEOUT_MS = 8000;
+const FETCH_RETRY_TIMEOUT_MS = 5000;
 const MAX_PLAYLIST_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
+const MAX_UPSTREAM_ATTEMPTS = 6;
 
 /**
  * 解析广告过滤是否启用：admin 后台开关 > 环境变量 > 默认开。
@@ -75,21 +85,15 @@ function buildProxyUrl(
   upstreamUrl: string,
   referer?: string,
 ): string {
-  const host = request.headers.get('host');
-  const protocol =
-    request.headers.get('x-forwarded-proto') ||
-    (() => {
-      try {
-        return new URL(request.url).protocol.replace(':', '');
-      } catch {
-        return 'http';
-      }
-    })();
   const signature = signM3U8ProxyRequest(upstreamUrl, referer);
-  let qs = `url=${encodeURIComponent(upstreamUrl)}`;
-  if (referer) qs += `&referer=${encodeURIComponent(referer)}`;
-  if (signature) qs += `&sig=${encodeURIComponent(signature)}`;
-  return `${protocol}://${host}/api/proxy/m3u8-filter?${qs}`;
+  const proxyUrl = new URL(
+    '/api/proxy/m3u8-filter',
+    getEffectiveRequestOrigin(request),
+  );
+  proxyUrl.searchParams.set('url', upstreamUrl);
+  if (referer) proxyUrl.searchParams.set('referer', referer);
+  if (signature) proxyUrl.searchParams.set('sig', signature);
+  return proxyUrl.toString();
 }
 
 function shouldProxyMediaAssets(): boolean {
@@ -117,29 +121,43 @@ function inferAssetKind(upstreamUrl: string): 'segment' | 'key' | 'map' {
   return 'segment';
 }
 
+function shouldRetryUpstreamStatus(status: number): boolean {
+  return (
+    status === 401 ||
+    status === 403 ||
+    status === 404 ||
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  );
+}
+
+function pushUnique<T>(items: T[], item: T) {
+  if (!items.includes(item)) {
+    items.push(item);
+  }
+}
+
 function buildAssetProxyUrl(
   request: Request,
   upstreamUrl: string,
   referer?: string,
   kind: 'segment' | 'key' | 'map' = inferAssetKind(upstreamUrl),
 ): string {
-  const host = request.headers.get('host');
-  const protocol =
-    request.headers.get('x-forwarded-proto') ||
-    (() => {
-      try {
-        return new URL(request.url).protocol.replace(':', '');
-      } catch {
-        return 'http';
-      }
-    })();
   const signature = signM3U8ProxyRequest(upstreamUrl, referer);
   if (!signature) return upstreamUrl;
 
-  let qs = `url=${encodeURIComponent(upstreamUrl)}&kind=${kind}`;
-  if (referer) qs += `&referer=${encodeURIComponent(referer)}`;
-  qs += `&sig=${encodeURIComponent(signature)}`;
-  return `${protocol}://${host}/api/proxy/m3u8-asset?${qs}`;
+  const proxyUrl = new URL(
+    '/api/proxy/m3u8-asset',
+    getEffectiveRequestOrigin(request),
+  );
+  proxyUrl.searchParams.set('url', upstreamUrl);
+  proxyUrl.searchParams.set('kind', kind);
+  if (referer) proxyUrl.searchParams.set('referer', referer);
+  proxyUrl.searchParams.set('sig', signature);
+  return proxyUrl.toString();
 }
 
 function rewriteUriAttribute(
@@ -343,37 +361,125 @@ export async function GET(request: Request) {
   const sanitizedExplicitReferer = normalizeHeaderUrl(explicitReferer);
   const inboundReferer = normalizeHeaderUrl(request.headers.get('referer'));
   let fallbackReferer: string | undefined;
+  let playlistDirectoryReferer: string | undefined;
   try {
     fallbackReferer = new URL(decodedUrl).origin + '/';
+    playlistDirectoryReferer = new URL('.', decodedUrl).toString();
   } catch {
     fallbackReferer = undefined;
+    playlistDirectoryReferer = undefined;
   }
   const refererToSend =
     sanitizedExplicitReferer || fallbackReferer || inboundReferer;
 
-  const upstreamHeaders: Record<string, string> = { 'User-Agent': ua };
-  if (refererToSend) {
-    upstreamHeaders['Referer'] = refererToSend;
+  const buildUpstreamHeaders = (
+    refererValue?: string,
+    userAgent = ua,
+    includeOrigin = true,
+  ) => {
+    const headers: Record<string, string> = {
+      Accept:
+        'application/vnd.apple.mpegurl,application/x-mpegURL,text/plain,*/*;q=0.6',
+      'User-Agent': userAgent,
+    };
+    if (refererValue) {
+      headers.Referer = refererValue;
+      if (includeOrigin) {
+        try {
+          headers.Origin = new URL(refererValue).origin;
+        } catch {
+          // ignore
+        }
+      }
+    }
+    return headers;
+  };
+
+  let effectiveRefererToSend = refererToSend;
+
+  const attempts: Array<{
+    referer?: string;
+    userAgent: string;
+    includeOrigin: boolean;
+  }> = [];
+  const pushAttempt = (
+    referer: string | undefined,
+    userAgent: string,
+    includeOrigin: boolean,
+  ) => {
+    if (
+      attempts.some(
+        (attempt) =>
+          attempt.referer === referer &&
+          attempt.userAgent === userAgent &&
+          attempt.includeOrigin === includeOrigin,
+      )
+    ) {
+      return;
+    }
+    attempts.push({ referer, userAgent, includeOrigin });
+  };
+
+  const refererCandidates: Array<string | undefined> = [];
+  pushUnique(refererCandidates, refererToSend);
+  pushUnique(refererCandidates, fallbackReferer);
+  pushUnique(refererCandidates, playlistDirectoryReferer);
+  pushUnique(refererCandidates, inboundReferer);
+  pushUnique(refererCandidates, undefined);
+
+  pushAttempt(refererToSend, ua, true);
+  for (const referer of refererCandidates) {
+    pushAttempt(referer, ua, true);
+  }
+  for (const referer of refererCandidates) {
+    pushAttempt(referer, DESKTOP_UA, true);
+  }
+  for (const referer of refererCandidates) {
+    pushAttempt(referer, DESKTOP_UA, false);
+  }
+
+  let upstream: Response | null = null;
+  let lastErrorMessage = '';
+  for (const [index, attempt] of attempts
+    .slice(0, MAX_UPSTREAM_ATTEMPTS)
+    .entries()) {
     try {
-      upstreamHeaders['Origin'] = new URL(refererToSend).origin;
-    } catch {
-      // ignore
+      const response = await fetchWithValidatedRedirects(
+        decodedUrl,
+        {
+          cache: 'no-store',
+          headers: buildUpstreamHeaders(
+            attempt.referer,
+            attempt.userAgent,
+            attempt.includeOrigin,
+          ),
+        },
+        {
+          timeoutMs: index === 0 ? FETCH_TIMEOUT_MS : FETCH_RETRY_TIMEOUT_MS,
+          maxRedirects: MAX_REDIRECTS,
+        },
+      );
+
+      upstream = response;
+      effectiveRefererToSend = attempt.referer;
+      if (response.ok || !shouldRetryUpstreamStatus(response.status)) {
+        break;
+      }
+
+      lastErrorMessage = `HTTP ${response.status}`;
+      await response.body?.cancel().catch(() => undefined);
+    } catch (e: any) {
+      lastErrorMessage = e?.message || 'unknown';
+      continue;
     }
   }
 
-  let upstream: Response;
-  try {
-    upstream = await fetchWithValidatedRedirects(
-      decodedUrl,
-      {
-        cache: 'no-store',
-        headers: upstreamHeaders,
-      },
-      { timeoutMs: FETCH_TIMEOUT_MS, maxRedirects: MAX_REDIRECTS },
-    );
-  } catch (e: any) {
+  if (!upstream) {
     return NextResponse.json(
-      { error: 'Upstream fetch failed', details: e?.message || 'unknown' },
+      {
+        error: 'Upstream fetch failed',
+        details: lastErrorMessage || 'unknown',
+      },
       { status: 502 },
     );
   }
@@ -408,17 +514,23 @@ export async function GET(request: Request) {
   let body: string;
   let adsRemoved = 0;
   let adsDuration = 0;
+  let adFilterBypassed = false;
 
   if (content.includes('#EXT-X-STREAM-INF')) {
     // 把当前请求用的 referer 透传到变体 URL 的代理参数里，
     // 否则下一跳又会因为没有 Referer 被上游拒
-    body = rewriteMasterPlaylist(content, baseUrl, request, refererToSend);
+    body = rewriteMasterPlaylist(
+      content,
+      baseUrl,
+      request,
+      effectiveRefererToSend,
+    );
   } else {
     const rewritten = rewriteVariantPlaylist(
       content,
       baseUrl,
       request,
-      refererToSend,
+      effectiveRefererToSend,
     );
     // 调试/对照场景：?adfilter=false 让代理只做 referer 透传 + 相对路径绝对化，
     // 不删任何广告段，方便客户端拿到原始时间轴
@@ -427,9 +539,17 @@ export async function GET(request: Request) {
       searchParams.get('adfilter') === '0';
     if ((await isAdFilterEnabled()) && !queryDisable) {
       const result = filterM3U8(rewritten, buildFilterConfigFromEnv());
-      body = result.filtered;
-      adsRemoved = result.adsRemoved;
-      adsDuration = result.adsDuration;
+      if (
+        result.changed &&
+        shouldBypassFilteredPlaylist(rewritten, result.filtered)
+      ) {
+        body = rewritten;
+        adFilterBypassed = true;
+      } else {
+        body = result.filtered;
+        adsRemoved = result.adsRemoved;
+        adsDuration = result.adsDuration;
+      }
     } else {
       body = rewritten;
     }
@@ -446,11 +566,14 @@ export async function GET(request: Request) {
   headers.set('Access-Control-Allow-Headers', 'Content-Type, Range, Accept');
   headers.set(
     'Access-Control-Expose-Headers',
-    'Content-Length, Content-Range, X-Ads-Removed, X-Ads-Duration',
+    'Content-Length, Content-Range, X-Ads-Removed, X-Ads-Duration, X-Ad-Filter-Bypassed',
   );
   if (adsRemoved > 0) {
     headers.set('X-Ads-Removed', String(adsRemoved));
     headers.set('X-Ads-Duration', adsDuration.toFixed(1));
+  }
+  if (adFilterBypassed) {
+    headers.set('X-Ad-Filter-Bypassed', 'unsafe-filter-result');
   }
 
   return new Response(body, { status: 200, headers });

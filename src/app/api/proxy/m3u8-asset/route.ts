@@ -14,8 +14,13 @@ export const runtime = 'edge';
 const DEFAULT_UA =
   'Mozilla/5.0 (Linux; Android 10; AndroidTV) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const DESKTOP_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+  '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 const FETCH_TIMEOUT_MS = 15000;
+const FETCH_RETRY_TIMEOUT_MS = 8000;
 const MAX_REDIRECTS = 3;
+const MAX_UPSTREAM_ATTEMPTS = 5;
 
 function withCorsHeaders(headers: Headers) {
   headers.set('Access-Control-Allow-Origin', '*');
@@ -91,6 +96,19 @@ function resolveReferer(
   return sanitizedExplicitReferer || fallbackReferer || inboundReferer;
 }
 
+function shouldRetryUpstreamStatus(status: number): boolean {
+  return (
+    status === 401 ||
+    status === 403 ||
+    status === 404 ||
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  );
+}
+
 async function handleAssetRequest(request: Request, method: 'GET' | 'HEAD') {
   const { searchParams } = new URL(request.url);
   const url = searchParams.get('url');
@@ -117,38 +135,133 @@ async function handleAssetRequest(request: Request, method: 'GET' | 'HEAD') {
   }
 
   const refererToSend = resolveReferer(decodedUrl, request, referer);
-  const requestHeaders: Record<string, string> = {
-    Accept: '*/*',
-    'User-Agent': request.headers.get('user-agent') || DEFAULT_UA,
+  let fallbackReferer: string | undefined;
+  let playlistDirectoryReferer: string | undefined;
+  try {
+    fallbackReferer = new URL(decodedUrl).origin + '/';
+    playlistDirectoryReferer = new URL('.', decodedUrl).toString();
+  } catch {
+    fallbackReferer = undefined;
+    playlistDirectoryReferer = undefined;
+  }
+  const inboundReferer = normalizeHeaderUrl(request.headers.get('referer'));
+
+  const buildRequestHeaders = (
+    refererValue?: string,
+    userAgent = request.headers.get('user-agent') || DEFAULT_UA,
+    includeOrigin = true,
+  ) => {
+    const headers: Record<string, string> = {
+      Accept: '*/*',
+      'User-Agent': userAgent,
+    };
+
+    if (refererValue) {
+      headers.Referer = refererValue;
+      if (includeOrigin) {
+        try {
+          headers.Origin = new URL(refererValue).origin;
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    const range = request.headers.get('range');
+    if (range) {
+      headers.Range = range;
+    }
+    return headers;
   };
 
-  if (refererToSend) {
-    requestHeaders.Referer = refererToSend;
+  const attempts: Array<{
+    referer?: string;
+    userAgent: string;
+    includeOrigin: boolean;
+  }> = [];
+  const pushAttempt = (
+    attemptReferer: string | undefined,
+    userAgent: string,
+    includeOrigin: boolean,
+  ) => {
+    if (
+      attempts.some(
+        (attempt) =>
+          attempt.referer === attemptReferer &&
+          attempt.userAgent === userAgent &&
+          attempt.includeOrigin === includeOrigin,
+      )
+    ) {
+      return;
+    }
+    attempts.push({ referer: attemptReferer, userAgent, includeOrigin });
+  };
+
+  const requestUa = request.headers.get('user-agent') || DEFAULT_UA;
+  for (const attemptReferer of [
+    refererToSend,
+    fallbackReferer,
+    playlistDirectoryReferer,
+    inboundReferer,
+    undefined,
+  ]) {
+    pushAttempt(attemptReferer, requestUa, true);
+  }
+  for (const attemptReferer of [
+    refererToSend,
+    fallbackReferer,
+    playlistDirectoryReferer,
+    inboundReferer,
+    undefined,
+  ]) {
+    pushAttempt(attemptReferer, DESKTOP_UA, true);
+    pushAttempt(attemptReferer, DESKTOP_UA, false);
+  }
+
+  let upstream: Response | null = null;
+  let lastErrorMessage = '';
+  for (const [index, attempt] of attempts
+    .slice(0, MAX_UPSTREAM_ATTEMPTS)
+    .entries()) {
     try {
-      requestHeaders.Origin = new URL(refererToSend).origin;
-    } catch {
-      // ignore
+      const response = await fetchWithValidatedRedirects(
+        decodedUrl,
+        {
+          cache: 'no-store',
+          headers: buildRequestHeaders(
+            attempt.referer,
+            attempt.userAgent,
+            attempt.includeOrigin,
+          ),
+          method,
+        },
+        {
+          timeoutMs: index === 0 ? FETCH_TIMEOUT_MS : FETCH_RETRY_TIMEOUT_MS,
+          maxRedirects: MAX_REDIRECTS,
+        },
+      );
+      upstream = response;
+      if (
+        response.ok ||
+        response.status === 206 ||
+        !shouldRetryUpstreamStatus(response.status)
+      ) {
+        break;
+      }
+      lastErrorMessage = `HTTP ${response.status}`;
+      await response.body?.cancel().catch(() => undefined);
+    } catch (e: any) {
+      lastErrorMessage = e?.message || 'unknown';
+      continue;
     }
   }
 
-  const range = request.headers.get('range');
-  if (range) {
-    requestHeaders.Range = range;
-  }
-
-  let upstream: Response;
-  try {
-    upstream = await fetchWithValidatedRedirects(
-      decodedUrl,
-      {
-        cache: 'no-store',
-        headers: requestHeaders,
-        method,
-      },
-      { timeoutMs: FETCH_TIMEOUT_MS, maxRedirects: MAX_REDIRECTS },
+  if (!upstream) {
+    return jsonError(
+      'Upstream fetch failed',
+      502,
+      lastErrorMessage || 'unknown',
     );
-  } catch (e: any) {
-    return jsonError('Upstream fetch failed', 502, e?.message || 'unknown');
   }
 
   if (!upstream.ok && upstream.status !== 206) {

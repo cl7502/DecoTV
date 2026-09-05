@@ -66,6 +66,14 @@ function getDefaultSearchResultLoadMode(): SearchResultLoadMode {
     : 'infinite';
 }
 
+function getDefaultRegistrationEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_ENABLE_REGISTRATION === 'true';
+}
+
+function getDefaultRegistrationUserGroup(): string {
+  return process.env.DEFAULT_REGISTRATION_GROUP?.trim() || '';
+}
+
 function normalizeForComparison(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => normalizeForComparison(item));
@@ -287,12 +295,10 @@ async function getInitConfig(
       SearchDownstreamMaxPage:
         Number(process.env.NEXT_PUBLIC_SEARCH_MAX_PAGE) || 5,
       SiteInterfaceCacheTime: cfgFile.cache_time || 7200,
-      DoubanProxyType:
-        process.env.NEXT_PUBLIC_DOUBAN_PROXY_TYPE || 'cmliussss-cdn-tencent',
+      DoubanProxyType: process.env.NEXT_PUBLIC_DOUBAN_PROXY_TYPE || 'auto',
       DoubanProxy: process.env.NEXT_PUBLIC_DOUBAN_PROXY || '',
       DoubanImageProxyType:
-        process.env.NEXT_PUBLIC_DOUBAN_IMAGE_PROXY_TYPE ||
-        'cmliussss-cdn-tencent',
+        process.env.NEXT_PUBLIC_DOUBAN_IMAGE_PROXY_TYPE || 'auto',
       DoubanImageProxy: process.env.NEXT_PUBLIC_DOUBAN_IMAGE_PROXY || '',
       TmdbProxyType: process.env.TMDB_REVERSE_PROXY
         ? 'reverse'
@@ -307,6 +313,8 @@ async function getInitConfig(
       SearchResultLoadMode: getDefaultSearchResultLoadMode(),
     },
     UserConfig: {
+      RegistrationEnabled: getDefaultRegistrationEnabled(),
+      RegistrationDefaultUserGroup: getDefaultRegistrationUserGroup(),
       Users: [],
     },
     SourceConfig: [],
@@ -325,6 +333,9 @@ async function getInitConfig(
     },
     PrivateLibraryConfig: {
       connectors: [],
+    },
+    AdFilterConfig: {
+      enabled: true,
     },
   };
 
@@ -413,12 +424,10 @@ export function getLocalModeConfig(): AdminConfig {
       SearchDownstreamMaxPage:
         Number(process.env.NEXT_PUBLIC_SEARCH_MAX_PAGE) || 5,
       SiteInterfaceCacheTime: 7200,
-      DoubanProxyType:
-        process.env.NEXT_PUBLIC_DOUBAN_PROXY_TYPE || 'cmliussss-cdn-tencent',
+      DoubanProxyType: process.env.NEXT_PUBLIC_DOUBAN_PROXY_TYPE || 'auto',
       DoubanProxy: process.env.NEXT_PUBLIC_DOUBAN_PROXY || '',
       DoubanImageProxyType:
-        process.env.NEXT_PUBLIC_DOUBAN_IMAGE_PROXY_TYPE ||
-        'cmliussss-cdn-tencent',
+        process.env.NEXT_PUBLIC_DOUBAN_IMAGE_PROXY_TYPE || 'auto',
       DoubanImageProxy: process.env.NEXT_PUBLIC_DOUBAN_IMAGE_PROXY || '',
       TmdbProxyType: process.env.TMDB_REVERSE_PROXY
         ? 'reverse'
@@ -433,6 +442,8 @@ export function getLocalModeConfig(): AdminConfig {
       SearchResultLoadMode: getDefaultSearchResultLoadMode(),
     },
     UserConfig: {
+      RegistrationEnabled: getDefaultRegistrationEnabled(),
+      RegistrationDefaultUserGroup: getDefaultRegistrationUserGroup(),
       Users: [
         {
           username: process.env.USERNAME || 'admin',
@@ -458,6 +469,9 @@ export function getLocalModeConfig(): AdminConfig {
     PrivateLibraryConfig: {
       connectors: [],
     },
+    AdFilterConfig: {
+      enabled: true,
+    },
   };
   return adminConfig;
 }
@@ -479,8 +493,14 @@ export async function getConfig(): Promise<AdminConfig> {
     return saveAdminConfigWithVerification(initConfig);
   }
 
+  const originalConfigSnapshot = JSON.stringify(
+    normalizeForComparison(adminConfig),
+  );
   const checkedConfig = configSelfCheck(adminConfig);
-  if (!isConfigConsistent(checkedConfig, adminConfig)) {
+  if (
+    JSON.stringify(normalizeForComparison(checkedConfig)) !==
+    originalConfigSnapshot
+  ) {
     return saveAdminConfigWithVerification(checkedConfig);
   }
 
@@ -491,6 +511,26 @@ export async function getConfig(): Promise<AdminConfig> {
 export function configSelfCheck(adminConfig: AdminConfig): AdminConfig {
   if (!adminConfig.SiteConfig) {
     adminConfig.SiteConfig = getLocalModeConfig().SiteConfig;
+  }
+
+  if (typeof adminConfig.SiteConfig.DoubanProxyType !== 'string') {
+    adminConfig.SiteConfig.DoubanProxyType =
+      process.env.NEXT_PUBLIC_DOUBAN_PROXY_TYPE || 'auto';
+  }
+
+  if (typeof adminConfig.SiteConfig.DoubanProxy !== 'string') {
+    adminConfig.SiteConfig.DoubanProxy =
+      process.env.NEXT_PUBLIC_DOUBAN_PROXY || '';
+  }
+
+  if (typeof adminConfig.SiteConfig.DoubanImageProxyType !== 'string') {
+    adminConfig.SiteConfig.DoubanImageProxyType =
+      process.env.NEXT_PUBLIC_DOUBAN_IMAGE_PROXY_TYPE || 'auto';
+  }
+
+  if (typeof adminConfig.SiteConfig.DoubanImageProxy !== 'string') {
+    adminConfig.SiteConfig.DoubanImageProxy =
+      process.env.NEXT_PUBLIC_DOUBAN_IMAGE_PROXY || '';
   }
 
   if (!adminConfig.SiteConfig.TmdbProxyType) {
@@ -520,7 +560,19 @@ export function configSelfCheck(adminConfig: AdminConfig): AdminConfig {
   }
 
   if (!adminConfig.UserConfig) {
-    adminConfig.UserConfig = { Users: [] };
+    adminConfig.UserConfig = {
+      RegistrationEnabled: getDefaultRegistrationEnabled(),
+      RegistrationDefaultUserGroup: getDefaultRegistrationUserGroup(),
+      Users: [],
+    };
+  }
+  if (typeof adminConfig.UserConfig.RegistrationEnabled !== 'boolean') {
+    adminConfig.UserConfig.RegistrationEnabled =
+      getDefaultRegistrationEnabled();
+  }
+  if (typeof adminConfig.UserConfig.RegistrationDefaultUserGroup !== 'string') {
+    adminConfig.UserConfig.RegistrationDefaultUserGroup =
+      getDefaultRegistrationUserGroup();
   }
   if (
     !adminConfig.UserConfig.Users ||

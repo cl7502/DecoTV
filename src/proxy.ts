@@ -3,31 +3,67 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { isPublicAdminAllowed, isPublicMode } from '@/lib/auth-mode';
 
 export async function proxy(request: NextRequest) {
-  const { pathname } = request.nextUrl;
+  let pathname = request.nextUrl.pathname;
+  let contentMode: string | null = null;
 
-  // 处理成人内容模式路径重写
-  // 如果路径以 /adult/ 开头，重写到实际 API 路径并添加 adult 标记
-  if (pathname.startsWith('/adult/')) {
-    const actualPath = pathname.replace('/adult/', '/');
-    const url = request.nextUrl.clone();
-    url.pathname = actualPath;
+  const rewriteUrl = request.nextUrl.clone();
+  let shouldRewrite = false;
 
-    // 添加成人内容标记到查询参数
-    url.searchParams.set('adult', '1');
+  while (true) {
+    const qualityMatch = pathname.match(/^\/quality\/([^/]+)(\/.*)$/i);
+    const shortQualityMatch = pathname.match(
+      /^\/q(360|480|720|1080|1440|2160)(\/.*)$/i,
+    );
 
-    // 重写请求
-    const response = NextResponse.rewrite(url);
-    response.headers.set('X-Content-Mode', 'adult');
+    if (pathname.startsWith('/adult/')) {
+      pathname = pathname.replace('/adult/', '/');
+      rewriteUrl.searchParams.set('adult', '1');
+      contentMode = 'adult';
+      shouldRewrite = true;
+      continue;
+    }
+
+    if (qualityMatch) {
+      pathname = qualityMatch[2] || '/';
+      rewriteUrl.searchParams.set('minResolution', qualityMatch[1]);
+      shouldRewrite = true;
+      continue;
+    }
+
+    if (shortQualityMatch) {
+      pathname = shortQualityMatch[2] || '/';
+      rewriteUrl.searchParams.set('minResolution', shortQualityMatch[1]);
+      shouldRewrite = true;
+      continue;
+    }
+
+    break;
+  }
+
+  // 处理成人内容和质量过滤路径重写。
+  // 例如 /adult/quality/720/api/search -> /api/search?adult=1&minResolution=720
+  if (shouldRewrite) {
+    rewriteUrl.pathname = pathname;
+    const response = NextResponse.rewrite(rewriteUrl);
+    if (contentMode) {
+      response.headers.set('X-Content-Mode', contentMode);
+    }
 
     // 如果是 API 请求，继续处理认证
-    if (actualPath.startsWith('/api')) {
+    if (pathname.startsWith('/api')) {
       // 不返回，继续执行下面的认证逻辑
-      request = new NextRequest(url, request);
+      request = new NextRequest(rewriteUrl, request);
+      pathname = request.nextUrl.pathname;
     } else {
       return response;
     }
+  }
+
+  if (isPublicMode() && isPublicModeAllowedPath(pathname)) {
+    return NextResponse.next();
   }
 
   // 跳过不需要认证的路径
@@ -84,6 +120,55 @@ export async function proxy(request: NextRequest) {
 
   // 签名验证失败或不存在签名
   return handleAuthFailure(request, pathname);
+}
+
+function isPublicModeAllowedPath(pathname: string): boolean {
+  if (pathname.startsWith('/admin') || pathname.startsWith('/api/admin')) {
+    return isPublicAdminAllowed();
+  }
+
+  const publicPages = [
+    '/',
+    '/search',
+    '/douban',
+    '/play',
+    '/live',
+    '/source-browser',
+    '/netdisk',
+    '/my-library',
+  ];
+
+  if (
+    publicPages.some(
+      (path) =>
+        pathname === path || (path !== '/' && pathname.startsWith(path)),
+    )
+  ) {
+    return true;
+  }
+
+  const publicApis = [
+    '/api/search',
+    '/api/categories',
+    '/api/detail',
+    '/api/playrecords',
+    '/api/favorites',
+    '/api/searchhistory',
+    '/api/skipconfigs',
+    '/api/skip-presets',
+    '/api/douban',
+    '/api/image-proxy',
+    '/api/proxy',
+    '/api/live',
+    '/api/pansou',
+    '/api/playback',
+    '/api/tmdb',
+    '/api/private-library',
+    '/api/source-browser',
+    '/api/danmu-external',
+  ];
+
+  return publicApis.some((path) => pathname.startsWith(path));
 }
 
 // 验证签名
@@ -167,6 +252,9 @@ function shouldSkipAuth(pathname: string): boolean {
     '/screenshot.png',
     '/api/tvbox/config',
     '/api/tvbox/diagnose',
+    '/api/tvbox/douban',
+    '/api/tvbox/search',
+    '/api/proxy/spider.jar',
     '/api/proxy/m3u8-filter',
     '/api/proxy/m3u8-asset',
     '/register', // 允许访问注册页面
@@ -178,7 +266,11 @@ function shouldSkipAuth(pathname: string): boolean {
   const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
   const hasRedis = !!(process.env.REDIS_URL || process.env.KV_REST_API_URL);
 
-  if (storageType === 'localstorage' && !hasRedis) {
+  if (
+    storageType === 'localstorage' &&
+    !hasRedis &&
+    (!isPublicMode() || isPublicAdminAllowed())
+  ) {
     // 本地模式下允许访问 admin 相关 API（用于获取/保存配置）
     const localModeAllowedPaths = [
       '/api/admin/config',
@@ -204,6 +296,6 @@ function shouldSkipAuth(pathname: string): boolean {
 // 配置 proxy 匹配规则
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|login|warning|api/login|api/register|api/logout|api/cron|api/server-config|api/version|VERSION.txt).*)',
+    '/((?!_next/static|_next/image|favicon.ico|login|warning|api/login|api/register|api/logout|api/cron|api/server-config|api/version|VERSION.txt|version.json).*)',
   ],
 };
